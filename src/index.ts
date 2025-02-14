@@ -12,6 +12,7 @@ interface TreeNode {
   isDir: boolean;
   children: Map<string, TreeNode>;
   parent?: TreeNode;
+  filePath?: string; // Добавляем поле для хранения пути к файлу
 }
 
 interface Options {  // Добавляем интерфейс для options
@@ -72,18 +73,19 @@ async function generateMarkdownDoc(
     const parts = filePath.split(sep);
     let current = rootNode;
 
-    for (const part of parts) {
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
       if (!current.children.has(part)) {
+        const isDir = i < parts.length - 1;
         current.children.set(part, {
           name: part,
-          isDir: false,
+          isDir,
           children: new Map(),
           parent: current,
+          filePath: isDir ? undefined : filePath, // Сохраняем путь только для файлов
         });
       }
-      const node = current.children.get(part)!;
-      node.isDir = parts.indexOf(part) < parts.length - 1;
-      current = node;
+      current = current.children.get(part)!;
     }
   });
 
@@ -113,45 +115,44 @@ async function generateMarkdownDoc(
   // Сортируем дерево, начиная с корневого узла
   sortTreeNode(rootNode);
 
-  // Генерируем ASCII-представление
+  // Генерируем ASCII-представление и собираем содержимое файлов
   let dirStructure = '```\n';
+  let filesContent = '';
 
-  function buildTree(node: TreeNode, prefix = '', isLast = true): string {
+  async function buildTree(node: TreeNode, prefix = '', isLast = true): Promise<string> {
     const connector = isLast ? '└── ' : '├── ';
     let result = prefix + connector + node.name + (node.isDir ? '/' : '') + '\n';
 
     const children = Array.from(node.children.values());
     const newPrefix = prefix + (isLast ? '    ' : '│   ');
 
-    children.forEach((child, index) => {
-      const isChildLast = index === children.length - 1;
-      result += buildTree(child, newPrefix, isChildLast);
-    });
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      const isChildLast = i === children.length - 1;
+      result += await buildTree(child, newPrefix, isChildLast);
 
-    return result;
-  }
+      if (!child.isDir && child.filePath) {
+        const fullPath = path.join(rootDir, child.filePath);
+        const content = await fs.readFile(fullPath, 'utf-8');
+        const extension = child.filePath.split('.').pop() || '';
 
-  dirStructure += buildTree(rootNode)
-    .replace(/├──/g, '├──')
-    .replace(/└──/g, '└──');
-  dirStructure += '```\n';
-
-  // Формируем содержимое файлов
-  let filesContent = '';
-
-  for (const file of files) {
-    const fullPath = path.join(rootDir, file);
-    const content = await fs.readFile(fullPath, 'utf-8'); // Используем fs.promises
-    const extension = file.split('.').pop() || '';
-
-    filesContent += `\`${file}\`
+        filesContent += `\`${child.filePath}\`
 
 \`\`\`${extension}
 ${content}
 \`\`\`
 
 `;
+      }
+    }
+
+    return result;
   }
+
+
+  dirStructure += await buildTree(rootNode)  // await здесь, т.к. buildTree теперь асинхронная
+    .then(structure => structure.replace(/├──/g, '├──').replace(/└──/g, '└──'));
+  dirStructure += '```\n';
 
   // Собираем итоговый документ
   const mdContent = `# ${basename(rootDir)}
