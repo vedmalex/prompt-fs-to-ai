@@ -7,6 +7,11 @@ import pkg from '../package.json' assert { type: 'json' }
 
 const OUTPUT_FILE_NAME = 'output.md'
 
+const getDefaultOutputFileName = (dirPath: string) => {
+  const dirName = basename(dirPath);
+  return `${dirName}-output.md`;
+}
+
 interface TreeNode {
   name: string;
   isDir: boolean;
@@ -25,9 +30,11 @@ async function generateMarkdownDoc(
   rootDir: string,
   pattern: string = '**/*',
   excludePatterns: string[] = [],
-  outputFile: string = OUTPUT_FILE_NAME,
+  outputFile?: string,
   options?: Options, // Добавляем options как необязательный параметр
 ) {
+  const defaultOutputFile = getDefaultOutputFileName(rootDir);
+  const finalOutputFile = outputFile || defaultOutputFile;
 
   // Формируем строку команды
   let commandString = `prompt-fs-to-ai ${path.relative(process.cwd(), rootDir).trim() || './'}`;
@@ -51,7 +58,12 @@ async function generateMarkdownDoc(
       absolute: false,
       dot: true,
       nodir: true, //Ищем только файлы, это ускорит
-      ignore: [outputFile, ...excludePatterns]
+      ignore: [
+        finalOutputFile,
+        '*output.md', // Исключаем все файлы, заканчивающиеся на output.md
+        '**/*output.md', // Исключаем во всех поддиректориях
+        ...excludePatterns
+      ]
     }
   );
 
@@ -172,7 +184,7 @@ ${commandString}
 `;
 
   // Сохраняем результат.  Используй path.resolve для формирования полного пути.
-  const outputPath = path.resolve(process.cwd(), outputFile);
+  const outputPath = path.resolve(process.cwd(), finalOutputFile);
   await fs.writeFile(outputPath, mdContent);
   console.log(`Markdown файл успешно создан: ${outputPath}`);
 }
@@ -186,10 +198,17 @@ program
   .argument('<directory>', 'The root directory to document')
   .option('-p, --pattern <pattern>', 'Glob pattern for files to include (default: **/*)', '**/*')
   .option('-e, --exclude <patterns...>', 'Glob patterns for files/directories to exclude', [])
-  .option('-o, --output <filename>', `Output file name (default: ${OUTPUT_FILE_NAME})`, OUTPUT_FILE_NAME)
+  .option('-o, --output <filename>', `Output file name (default: based on directory name)`)
   .action(async (directory, options) => {
     try {
-      await generateMarkdownDoc(path.resolve(process.cwd(), directory), options.pattern, options.exclude, options.output, options);
+      const resolvedDirectory = path.resolve(process.cwd(), directory);
+      await generateMarkdownDoc(
+        resolvedDirectory,
+        options.pattern,
+        options.exclude,
+        options.output,
+        options
+      );
     } catch (error) {
       console.error("Произошла ошибка:", error);
       process.exit(1); // Выход с кодом ошибки
