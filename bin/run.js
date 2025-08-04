@@ -1,2 +1,3 @@
-#!/usr/bin/env bun
-require('../dist/index')
+#!/usr/bin/env node
+const { runCLI } = require('../dist/index');
+runCLI(); //!!!

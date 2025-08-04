@@ -12,6 +12,60 @@ const getDefaultOutputFileName = (dirPath: string) => {
   return `${dirName}-output.md`;
 }
 
+/**
+ * Type guard to check if patterns is an array
+ */
+export function isPatternArray(patterns: string | string[]): patterns is string[] {
+  return Array.isArray(patterns);
+}
+
+/**
+ * Normalize patterns to always return array of strings
+ */
+export function normalizePatterns(patterns: string | string[]): string[] {
+  if (isPatternArray(patterns)) {
+    return patterns.filter(pattern => pattern.trim().length > 0);
+  }
+  return [patterns];
+}
+
+/**
+ * Process multiple patterns and return unique files
+ */
+export async function processMultiplePatterns(
+  patterns: string[],
+  rootDir: string,
+  excludePatterns: string[],
+  finalOutputFile: string
+): Promise<string[]> {
+  const allFiles = new Set<string>();
+
+  for (const pattern of patterns) {
+    const glob = new Glob(
+      pattern,
+      {
+        cwd: rootDir,
+        absolute: false,
+        dot: true,
+        nodir: true, // Search only files for better performance
+        ignore: [
+          finalOutputFile,
+          '*output.md', // Exclude all files ending with output.md
+          '**/*output.md', // Exclude in all subdirectories
+          ...excludePatterns
+        ]
+      }
+    );
+
+    // Scan files with exclusions
+    for await (const file of glob) {
+      allFiles.add(file);
+    }
+  }
+
+  return Array.from(allFiles).sort();
+}
+
 interface TreeNode {
   name: string;
   isDir: boolean;
@@ -20,59 +74,49 @@ interface TreeNode {
   filePath?: string; // Добавляем поле для хранения пути к файлу
 }
 
-interface Options {  // Добавляем интерфейс для options
-  pattern: string;
+interface Options {  // Interface for command line options
+  pattern: string | string[];  // Support single pattern or multiple patterns
   exclude: string[];
   output: string;
 }
 
-async function generateMarkdownDoc(
+export async function generateMarkdownDoc(
   rootDir: string,
-  pattern: string = '**/*',
+  patterns: string | string[] = '**/*',
   excludePatterns: string[] = [],
   outputFile?: string,
-  options?: Options, // Добавляем options как необязательный параметр
+  options?: Options, // Command line options for generating command string
 ) {
   const defaultOutputFile = getDefaultOutputFileName(rootDir);
   const finalOutputFile = outputFile || defaultOutputFile;
 
-  // Формируем строку команды
+  // Generate command string with support for multiple patterns
   let commandString = `prompt-fs-to-ai ${path.relative(process.cwd(), rootDir).trim() || './'}`;
   if (options) {
-    if (options.pattern !== '**/*') { // Добавляем опцию, только если она отличается от дефолтной
-      commandString += ` -p "${options.pattern}"`;
+    // Handle multiple patterns for command string generation
+    const normalizedPatterns = normalizePatterns(options.pattern);
+    const isDefaultPattern = normalizedPatterns.length === 1 && normalizedPatterns[0] === '**/*';
+
+    if (!isDefaultPattern) {
+      commandString += normalizedPatterns.map(p => ` -p "${p}"`).join('');
     }
+
     if (options.exclude.length > 0) {
-      commandString += ` -e ${options.exclude.map(e => `"${e}"`).join(' ')}`; // Корректно обрабатываем несколько exclude
+      commandString += ` -e ${options.exclude.map(e => `"${e}"`).join(' ')}`;
     }
-    if (options.output !== OUTPUT_FILE_NAME) {  // Добавляем опцию, только если она отличается от дефолтной
+    if (options.output !== OUTPUT_FILE_NAME) {
       commandString += ` -o "${options.output}"`;
     }
   }
 
-  // Формируем итоговый glob-шаблон
-  const glob = new Glob(
-    pattern,
-    {
-      cwd: rootDir,
-      absolute: false,
-      dot: true,
-      nodir: true, //Ищем только файлы, это ускорит
-      ignore: [
-        finalOutputFile,
-        '*output.md', // Исключаем все файлы, заканчивающиеся на output.md
-        '**/*output.md', // Исключаем во всех поддиректориях
-        ...excludePatterns
-      ]
-    }
+  // Process patterns (single or multiple) to get file list
+  const normalizedPatterns = normalizePatterns(patterns);
+  const files = await processMultiplePatterns(
+    normalizedPatterns,
+    rootDir,
+    excludePatterns,
+    finalOutputFile
   );
-
-  const files: string[] = [];
-
-  // Сканируем файлы с учётом исключений
-  for await (const file of glob) {
-    files.push(file);
-  }
 
   // Строим древовидную структуру
   const rootNode: TreeNode = {
@@ -189,31 +233,42 @@ ${commandString}
   console.log(`Markdown файл успешно создан: ${outputPath}`);
 }
 
-const program = new Command();
+// CLI function for external usage
+export function runCLI() {
+  const program = new Command();
 
-program
-  .name('doc-generator')
-  .description('Generates a markdown documentation of a directory structure and file contents.')
-  .version(pkg.version) // Версия из package.json
-  .argument('<directory>', 'The root directory to document')
-  .option('-p, --pattern <pattern>', 'Glob pattern for files to include (default: **/*)', '**/*')
-  .option('-e, --exclude <patterns...>', 'Glob patterns for files/directories to exclude', [])
-  .option('-o, --output <filename>', `Output file name (default: based on directory name)`)
-  .action(async (directory, options) => {
-    try {
-      const resolvedDirectory = path.resolve(process.cwd(), directory);
-      await generateMarkdownDoc(
-        resolvedDirectory,
-        options.pattern,
-        options.exclude,
-        options.output,
-        options
-      );
-    } catch (error) {
-      console.error("Произошла ошибка:", error);
-      process.exit(1); // Выход с кодом ошибки
-    }
-  });
+  program
+    .name('doc-generator')
+    .description('Generates a markdown documentation of a directory structure and file contents.')
+    .version(pkg.version) // Version from package.json
+    .argument('<directory>', 'The root directory to document')
+    .option('-p, --pattern <patterns...>', 'Glob patterns for files to include (space-separated)', [])
+    .option('-e, --exclude <patterns...>', 'Glob patterns for files/directories to exclude', [])
+    .option('-o, --output <filename>', `Output file name (default: based on directory name)`)
+    .action(async (directory, options) => {
+      try {
+        const resolvedDirectory = path.resolve(process.cwd(), directory);
+        // If no patterns are provided via the CLI, use the default '**/*'. Otherwise, use the user's patterns.
+        const patternsToUse = options.pattern.length > 0 ? options.pattern : ['**/*'];
 
+        // Create a new options object for generateMarkdownDoc to ensure the generated command string is correct.
+        const docOptions = {
+          ...options,
+          pattern: patternsToUse
+        };
 
-program.parse(process.argv);
+        await generateMarkdownDoc(
+          resolvedDirectory,
+          patternsToUse,
+          options.exclude,
+          options.output,
+          docOptions
+        );
+      } catch (error) {
+        console.error("Произошла ошибка:", error);
+        process.exit(1); // Exit with error code
+      }
+    });
+
+  program.parse(process.argv);
+}

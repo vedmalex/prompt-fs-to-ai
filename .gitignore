@@ -3,3 +3,5 @@ dist
 types
 tsconfig.tsbuildinfo
 output.md
+coverage
+.DS_Store
