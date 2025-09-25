@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { normalizePatterns, isPatternArray, processMultiplePatterns, generateMarkdownDoc, parseMarkdownForFiles, reverseMarkdownToFiles } from './index.js'
+import { normalizePatterns, isPatternArray, processMultiplePatterns, generateMarkdownDoc, parseMarkdownForFiles, reverseMarkdownToFiles, parsePromptFsToAiFile, createPromptFsToAiFile } from './index.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -260,6 +260,453 @@ describe('Multiple Pattern Support', () => {
       expect(content).not.toContain('src/utils.js')
 
       await fs.rm(outputFile, { force: true })
+    })
+  })
+
+  describe('.prompt-fs-to-ai File Parsing', () => {
+    const testConfigDir = path.join(__dirname, '..', 'test-config-fixtures')
+
+    beforeEach(async () => {
+      await fs.mkdir(testConfigDir, { recursive: true })
+    })
+
+    afterEach(async () => {
+      await fs.rm(testConfigDir, { recursive: true, force: true })
+    })
+
+    describe('parsePromptFsToAiFile', () => {
+      it('should parse include patterns with + prefix', async () => {
+        const configContent = `# Include TypeScript files
++**/*.ts
++**/*.tsx
+
+# Include JavaScript files
++**/*.js
+`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
+
+        const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
+
+        expect(result.include).toEqual(['**/*.ts', '**/*.tsx', '**/*.js'])
+        expect(result.exclude).toEqual([])
+      })
+
+      it('should parse exclude patterns without prefix', async () => {
+        const configContent = `# Exclude directories
+node_modules/
+dist/
+build/
+
+# Exclude files
+**/*.log
+**/*.tmp
+`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
+
+        const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
+
+        expect(result.include).toEqual([])
+        expect(result.exclude).toEqual(['node_modules/', 'dist/', 'build/', '**/*.log', '**/*.tmp'])
+      })
+
+      it('should handle mixed include and exclude patterns', async () => {
+        const configContent = `# Include source files
++src/**/*.ts
++src/**/*.js
+
+# Exclude test files
+test/
+**/*.test.ts
+`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
+
+        const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
+
+        expect(result.include).toEqual(['src/**/*.ts', 'src/**/*.js'])
+        expect(result.exclude).toEqual(['test/', '**/*.test.ts'])
+      })
+
+      it('should handle comments and empty lines', async () => {
+        const configContent = `# This is a comment
+
++**/*.ts
+
+# Another comment
+
+**/*.log
+
+
++**/*.js
+`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
+
+        const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
+
+        expect(result.include).toEqual(['**/*.ts', '**/*.js'])
+        expect(result.exclude).toEqual(['**/*.log'])
+      })
+
+      it('should handle exclude patterns with - prefix', async () => {
+        const configContent = `-node_modules/
+-**/*.log
++**/*.ts
+`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
+
+        const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
+
+        expect(result.include).toEqual(['**/*.ts'])
+        expect(result.exclude).toEqual(['node_modules/', '**/*.log'])
+      })
+
+      it('should return empty arrays when file does not exist', async () => {
+        const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
+
+        expect(result.include).toEqual([])
+        expect(result.exclude).toEqual([])
+      })
+
+      it('should trim whitespace from patterns', async () => {
+        const configContent = `  +**/*.ts
++  **/*.js
+
+  node_modules/
+`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
+
+        const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
+
+        expect(result.include).toEqual(['**/*.ts', '**/*.js'])
+        expect(result.exclude).toEqual(['node_modules/'])
+      })
+
+      it('should prioritize config file in target directory over current directory', async () => {
+        // Create config in current directory (fallback)
+        const cwdConfigContent = `+*.md
+docs/
+`
+        await fs.writeFile(path.join(__dirname, '.prompt-fs-to-ai'), cwdConfigContent)
+
+        // Create different config in target directory
+        const targetConfigContent = `+*.ts
++*.js
+src/
+`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), targetConfigContent)
+
+        const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
+
+        // Should use target directory config, not current directory config
+        expect(result.include).toEqual(['*.ts', '*.js'])
+        expect(result.exclude).toEqual(['src/'])
+        expect(result.configFilePath).toBe(path.join(testConfigDir, '.prompt-fs-to-ai'))
+
+        // Clean up
+        await fs.rm(path.join(__dirname, '.prompt-fs-to-ai'), { force: true })
+      })
+
+      it('should use current directory config when target directory has no config', async () => {
+        // Create config in current directory only
+        const cwdConfigContent = `+*.md
+docs/
+`
+        await fs.writeFile(path.join(__dirname, '.prompt-fs-to-ai'), cwdConfigContent)
+
+        const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
+
+        // Should use current directory config
+        expect(result.include).toEqual(['*.md'])
+        expect(result.exclude).toEqual(['docs/'])
+        expect(result.configFilePath).toBe(path.join(__dirname, '.prompt-fs-to-ai'))
+
+        // Clean up
+        await fs.rm(path.join(__dirname, '.prompt-fs-to-ai'), { force: true })
+      })
+
+      it('should return empty patterns when no config file exists', async () => {
+        const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
+
+        expect(result.include).toEqual([])
+        expect(result.exclude).toEqual([])
+        expect(result.configFilePath).toBeUndefined()
+      })
+    })
+
+    describe('createPromptFsToAiFile', () => {
+      it('should create config file with include and exclude patterns', async () => {
+        const includePatterns = ['**/*.ts', '**/*.js']
+        const excludePatterns = ['node_modules/', 'dist/']
+
+        await createPromptFsToAiFile(testConfigDir, includePatterns, excludePatterns)
+
+        const configFile = path.join(testConfigDir, '.prompt-fs-to-ai')
+        const content = await fs.readFile(configFile, 'utf-8')
+
+        expect(content).toContain('# Auto-generated .prompt-fs-to-ai file')
+        expect(content).toContain('# Include patterns')
+        expect(content).toContain('+**/*.ts')
+        expect(content).toContain('+**/*.js')
+        expect(content).toContain('# Exclude patterns')
+        expect(content).toContain('node_modules/')
+        expect(content).toContain('dist/')
+
+        // Verify the file can be parsed correctly
+        const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
+        expect(result.include).toEqual(includePatterns)
+        expect(result.exclude).toEqual(excludePatterns)
+      })
+
+      it('should create config file with only include patterns', async () => {
+        const includePatterns = ['src/**/*.ts']
+        const excludePatterns: string[] = []
+
+        await createPromptFsToAiFile(testConfigDir, includePatterns, excludePatterns)
+
+        const configFile = path.join(testConfigDir, '.prompt-fs-to-ai')
+        const content = await fs.readFile(configFile, 'utf-8')
+
+        expect(content).toContain('+src/**/*.ts')
+        expect(content).not.toContain('# Exclude patterns')
+      })
+
+      it('should create config file with only exclude patterns', async () => {
+        const includePatterns: string[] = []
+        const excludePatterns = ['temp/', 'cache/']
+
+        await createPromptFsToAiFile(testConfigDir, includePatterns, excludePatterns)
+
+        const configFile = path.join(testConfigDir, '.prompt-fs-to-ai')
+        const content = await fs.readFile(configFile, 'utf-8')
+
+        expect(content).toContain('# Exclude patterns')
+        expect(content).toContain('temp/')
+        expect(content).toContain('cache/')
+        expect(content).not.toContain('# Include patterns')
+      })
+    })
+
+    describe('Integration with generateMarkdownDoc', () => {
+      it('should use include patterns from .prompt-fs-to-ai file', async () => {
+        // Create test files
+        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
+        await fs.mkdir(path.join(testConfigDir, 'docs'), { recursive: true })
+
+        await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
+        await fs.writeFile(path.join(testConfigDir, 'src', 'utils.js'), 'export const utils = "test"')
+        await fs.writeFile(path.join(testConfigDir, 'docs', 'readme.md'), '# Test')
+
+        // Create .prompt-fs-to-ai file
+        const configContent = `+src/**/*.ts
++docs/**/*.md
+**/utils.js
+`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
+
+        const outputFile = 'config-integration.md'
+        await generateMarkdownDoc(testConfigDir, undefined, [], outputFile)
+
+        const content = await fs.readFile(outputFile, 'utf-8')
+
+        // Should include TypeScript and Markdown files
+        expect(content).toContain('src/app.ts')
+        expect(content).toContain('console.log("app")')
+        expect(content).toContain('docs/readme.md')
+        expect(content).toContain('# Test')
+
+        // Should exclude JavaScript file due to exclude pattern
+        expect(content).not.toContain('src/utils.js')
+        expect(content).not.toContain('export const utils')
+
+        await fs.rm(outputFile, { force: true })
+      })
+
+      it('should use config file patterns when no CLI patterns provided', async () => {
+        // Create test files
+        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
+        await fs.mkdir(path.join(testConfigDir, 'lib'), { recursive: true })
+
+        await fs.writeFile(path.join(testConfigDir, 'src', 'main.ts'), 'console.log("main")')
+        await fs.writeFile(path.join(testConfigDir, 'lib', 'helper.js'), 'export const helper = "test"')
+
+        // Create .prompt-fs-to-ai file with includes
+        const configContent = `+src/**/*.ts
+`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
+
+        // Don't specify CLI patterns (use default)
+        const outputFile = 'config-only.md'
+        await generateMarkdownDoc(testConfigDir, undefined, [], outputFile)
+
+        const content = await fs.readFile(outputFile, 'utf-8')
+
+        // Should include only config patterns (TypeScript files)
+        expect(content).toContain('src/main.ts')
+        expect(content).toContain('console.log("main")')
+        expect(content).not.toContain('lib/helper.js')
+        expect(content).not.toContain('export const helper')
+
+        await fs.rm(outputFile, { force: true })
+      })
+
+      it('should prioritize CLI patterns over config includes when CLI patterns are provided', async () => {
+        // Create test files
+        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
+        await fs.mkdir(path.join(testConfigDir, 'test'), { recursive: true })
+
+        await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
+        await fs.writeFile(path.join(testConfigDir, 'test', 'spec.ts'), 'describe("test", () => {})')
+
+        // Create .prompt-fs-to-ai file
+        const configContent = `+src/**/*.ts
++test/**/*.ts
+`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
+
+        // CLI specifies only src files
+        const outputFile = 'config-priority.md'
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile)
+
+        const content = await fs.readFile(outputFile, 'utf-8')
+
+        // Should include only src files as specified by CLI
+        expect(content).toContain('src/app.ts')
+        expect(content).toContain('console.log("app")')
+        expect(content).not.toContain('test/spec.ts')
+        expect(content).not.toContain('describe("test"')
+
+        await fs.rm(outputFile, { force: true })
+      })
+
+      it('should include config file patterns in generated command when no CLI patterns provided', async () => {
+        // Create test files
+        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
+        await fs.mkdir(path.join(testConfigDir, 'docs'), { recursive: true })
+
+        await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
+        await fs.writeFile(path.join(testConfigDir, 'docs', 'readme.md'), '# Test')
+
+        // Create .prompt-fs-to-ai file
+        const configContent = `+src/**/*.ts
++docs/**/*.md
+node_modules/
+`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
+
+        const outputFile = 'config-command.md'
+        await generateMarkdownDoc(testConfigDir, undefined, [], outputFile)
+
+        const content = await fs.readFile(outputFile, 'utf-8')
+
+        // Should contain the command with patterns from config file
+        expect(content).toContain('prompt-fs-to-ai')
+        expect(content).toContain('-p "src/**/*.ts"')
+        expect(content).toContain('-p "docs/**/*.md"')
+        expect(content).toContain('-e "node_modules/"')
+
+        await fs.rm(outputFile, { force: true })
+      })
+
+      it('should include all final patterns in command even when config file is deleted', async () => {
+        // Create test files
+        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
+
+        await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
+
+        // Create .prompt-fs-to-ai file
+        const configContent = `+src/**/*.ts
+temp/
+`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
+
+        // Generate doc with config patterns
+        const outputFile = 'final-command.md'
+        await generateMarkdownDoc(testConfigDir, undefined, ['logs/'], outputFile)
+
+        // Delete config file
+        await fs.rm(path.join(testConfigDir, '.prompt-fs-to-ai'), { force: true })
+
+        const content = await fs.readFile(outputFile, 'utf-8')
+
+        // Command should still contain all patterns that were used
+        expect(content).toContain('prompt-fs-to-ai')
+        expect(content).toContain('-p "src/**/*.ts"')
+        expect(content).toContain('-e "logs/"')
+        expect(content).toContain('"temp/"')
+
+        await fs.rm(outputFile, { force: true })
+      })
+
+      it('should create .prompt-fs-to-ai file in target directory when no config exists', async () => {
+        // Create test files
+        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
+
+        await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
+
+        // Ensure no config file exists in target directory
+        const targetConfigFile = path.join(testConfigDir, '.prompt-fs-to-ai')
+        try {
+          await fs.rm(targetConfigFile, { force: true })
+        } catch (error) {
+          // File doesn't exist, that's fine
+        }
+
+        // Also ensure no config file exists in current directory for this test
+        const cwdConfigFile = path.join(__dirname, '..', '.prompt-fs-to-ai')
+        const cwdConfigBackup = path.join(__dirname, '..', '.prompt-fs-to-ai.backup')
+        let cwdConfigExisted = false
+        try {
+          await fs.access(cwdConfigFile)
+          cwdConfigExisted = true
+          await fs.rename(cwdConfigFile, cwdConfigBackup)
+        } catch (error) {
+          // File doesn't exist, that's fine
+        }
+
+        const outputFile = 'create-config.md'
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], ['node_modules/'], outputFile)
+
+        // Check that config file was created in target directory
+        const configExists = await fs.stat(targetConfigFile).then(() => true).catch(() => false)
+        expect(configExists).toBe(true)
+
+        // Check config file content
+        const configContent = await fs.readFile(targetConfigFile, 'utf-8')
+        expect(configContent).toContain('# Auto-generated .prompt-fs-to-ai file')
+        expect(configContent).toContain('+src/**/*.ts')
+        expect(configContent).toContain('node_modules/')
+
+        // Restore original cwd config file if it existed
+        if (cwdConfigExisted) {
+          await fs.rename(cwdConfigBackup, cwdConfigFile)
+        }
+
+        await fs.rm(outputFile, { force: true })
+        await fs.rm(targetConfigFile, { force: true })
+      })
+
+      it('should update config file when one already exists in target directory', async () => {
+        // Create existing config file
+        const existingConfig = `+existing/*.ts
+existing/
+`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), existingConfig)
+
+        // Create test files
+        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
+        await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
+
+        const outputFile = 'existing-config.md'
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile)
+
+        // Check that existing config was updated with new patterns
+        const configContent = await fs.readFile(path.join(testConfigDir, '.prompt-fs-to-ai'), 'utf-8')
+        expect(configContent).toContain('# Auto-generated .prompt-fs-to-ai file')
+        expect(configContent).toContain('+src/**/*.ts')
+        expect(configContent).not.toContain('existing/*.ts')
+
+        await fs.rm(outputFile, { force: true })
+        await fs.rm(path.join(testConfigDir, '.prompt-fs-to-ai'), { force: true })
+      })
     })
   })
 

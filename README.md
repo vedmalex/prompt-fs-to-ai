@@ -63,6 +63,50 @@ prompt-fs-to-ai <directory> [options]
 
 *   `-o, --output <filename>`:  The name of the output Markdown file.  Defaults to `output.md`.
 
+## Configuration File (.prompt-fs-to-ai)
+
+You can create a `.prompt-fs-to-ai` file in your project root directory to define default include and exclude patterns. This file uses a syntax similar to `.gitignore`.
+
+**Syntax:**
+
+*   Lines starting with `#` are comments and are ignored
+*   Empty lines are ignored
+*   Lines starting with `+` define **include patterns** (files to include)
+*   Lines starting with `-` or without prefix define **exclude patterns** (files to exclude)
+
+**Example `.prompt-fs-to-ai` file:**
+
+```gitignore
+# Include source files
++src/**/*.ts
++src/**/*.js
+
+# Include documentation
++**/*.md
++**/*.txt
+
+# Exclude common directories
+node_modules/
+dist/
+build/
+
+# Exclude temporary files
+**/*.log
+**/*.tmp
+.cache/
+```
+
+**Priority:**
+
+1. **CLI patterns** have the highest priority and override configuration file patterns
+2. If no CLI patterns are specified, patterns from `.prompt-fs-to-ai` in the **target directory** are used
+3. If no config file exists in the target directory, patterns from `.prompt-fs-to-ai` in the **current working directory** are used as fallback
+4. If no config files are found, the default `**/*` pattern is used
+5. **Exclude patterns** from both CLI and config file are combined
+6. **Auto-creation/Update**: The `.prompt-fs-to-ai` file in the target directory is automatically created or updated with the patterns used for the current run
+
+**Examples:**
+
 **Examples:**
 
 1.  **Generate documentation for the entire project, saving to `output.md`:**

@@ -1,0 +1,30 @@
+# Example .prompt-fs-to-ai file
+# This file defines which files to include or exclude when generating documentation
+
+# Include TypeScript files
++**/*.ts
++**/*.tsx
+
+# Include JavaScript files
++**/*.js
++**/*.jsx
+
+# Include Markdown files
++**/*.md
+
+# Include JSON configuration files
++**/*.json
+
+# Exclude node_modules directory
+**/node_modules/**
+
+# Exclude build output
+dist/
+build/
+
+# Exclude coverage reports
+coverage/
+
+# Exclude temporary files
+**/*.tmp
+**/*.log

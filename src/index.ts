@@ -88,33 +88,78 @@ export async function generateMarkdownDoc(
   const defaultOutputFile = getDefaultOutputFileName(rootDir);
   const finalOutputFile = outputFile || defaultOutputFile;
 
-  // Generate command string with support for multiple patterns
-  let commandString = `prompt-fs-to-ai ${path.relative(process.cwd(), rootDir).trim() || './'}`;
-  if (options) {
-    // Handle multiple patterns for command string generation
-    const normalizedPatterns = normalizePatterns(options.pattern);
-    const isDefaultPattern = normalizedPatterns.length === 1 && normalizedPatterns[0] === '**/*';
+  // Read .prompt-fs-to-ai file for additional patterns
+  // First check target directory, then current working directory
+  const configPatterns = await parsePromptFsToAiFile(rootDir, process.cwd());
 
-    if (!isDefaultPattern) {
-      commandString += normalizedPatterns.map(p => ` -p "${p}"`).join('');
-    }
+  // Check if config file exists specifically in the target directory
+  const targetConfigFile = path.join(rootDir, '.prompt-fs-to-ai');
+  let targetConfigExists = false;
+  try {
+    await fs.access(targetConfigFile);
+    targetConfigExists = true;
+  } catch (error) {
+    targetConfigExists = false;
+  }
 
-    if (options.exclude.length > 0) {
-      commandString += ` -e ${options.exclude.map(e => `"${e}"`).join(' ')}`;
-    }
-    if (options.output && options.output !== defaultOutputFile) {
-      commandString += ` -o "${options.output}"`;
+
+  // Combine patterns from CLI and config file
+  let finalIncludePatterns: string[];
+  const normalizedCliPatterns = normalizePatterns(patterns);
+  const isDefaultCliPattern = normalizedCliPatterns.length === 1 && normalizedCliPatterns[0] === '**/*';
+
+  if (!isDefaultCliPattern) {
+    // CLI patterns provided, use them (CLI has priority over config)
+    finalIncludePatterns = normalizedCliPatterns;
+  } else if (configPatterns.include.length > 0) {
+    // No CLI patterns, but config has includes
+    finalIncludePatterns = configPatterns.include;
+  } else {
+    // Use default pattern
+    finalIncludePatterns = ['**/*'];
+  }
+
+  // Combine exclude patterns from CLI and config file
+  const finalExcludePatterns = [...excludePatterns, ...configPatterns.exclude];
+
+  // Create or update .prompt-fs-to-ai file in the target directory with current patterns
+  try {
+    await createPromptFsToAiFile(rootDir, finalIncludePatterns, finalExcludePatterns);
+    if (!targetConfigExists) {
+      console.log(`Создан файл .prompt-fs-to-ai в директории: ${rootDir}`);
     } else {
-      commandString += ` -o "${defaultOutputFile}"`;
+      console.log(`Обновлен файл .prompt-fs-to-ai в директории: ${rootDir}`);
     }
+  } catch (error) {
+    console.warn(`Не удалось создать/обновить файл .prompt-fs-to-ai: ${error}`);
+  }
+
+  // Generate command string with all actually used patterns
+  let commandString = `prompt-fs-to-ai ${path.relative(process.cwd(), rootDir).trim() || './'}`;
+
+  // Add include patterns if they're not the default
+  const isFinalDefaultPattern = finalIncludePatterns.length === 1 && finalIncludePatterns[0] === '**/*';
+  if (!isFinalDefaultPattern) {
+    commandString += finalIncludePatterns.map(p => ` -p "${p}"`).join('');
+  }
+
+  // Add exclude patterns
+  if (finalExcludePatterns.length > 0) {
+    commandString += ` -e ${finalExcludePatterns.map(e => `"${e}"`).join(' ')}`;
+  }
+
+  // Add output option
+  if (options?.output && options.output !== defaultOutputFile) {
+    commandString += ` -o "${options.output}"`;
+  } else {
+    commandString += ` -o "${defaultOutputFile}"`;
   }
 
   // Process patterns (single or multiple) to get file list
-  const normalizedPatterns = normalizePatterns(patterns);
   const files = await processMultiplePatterns(
-    normalizedPatterns,
+    finalIncludePatterns,
     rootDir,
-    excludePatterns,
+    finalExcludePatterns,
     finalOutputFile
   );
 
@@ -305,6 +350,106 @@ export function parseMarkdownForFiles(markdownContent: string): Array<{ path: st
   }
 
   return files;
+}
+
+/**
+ * Parse .prompt-fs-to-ai file for include/exclude patterns
+ * @param rootDir - Root directory to search for .prompt-fs-to-ai file (target directory)
+ * @param cwdDir - Current working directory to search for .prompt-fs-to-ai file (fallback)
+ * @returns Object with include and exclude patterns and the file path that was used
+ */
+export async function parsePromptFsToAiFile(rootDir: string, cwdDir?: string): Promise<{ include: string[], exclude: string[], configFilePath?: string }> {
+  // First, try to find .prompt-fs-to-ai in the target directory (rootDir)
+  let configFile = path.join(rootDir, '.prompt-fs-to-ai');
+  let foundInTargetDir = false;
+
+  try {
+    await fs.access(configFile);
+    foundInTargetDir = true;
+  } catch (error) {
+    // File doesn't exist in target directory
+    foundInTargetDir = false;
+  }
+
+  // If not found in target directory, try current working directory
+  if (!foundInTargetDir && cwdDir && cwdDir !== rootDir) {
+    configFile = path.join(cwdDir, '.prompt-fs-to-ai');
+    try {
+      await fs.access(configFile);
+    } catch (error) {
+      // File doesn't exist in either location
+      return { include: [], exclude: [], configFilePath: undefined };
+    }
+  }
+
+  // If we reach here, configFile points to an existing file
+  try {
+    const content = await fs.readFile(configFile, 'utf-8');
+    const lines = content.split('\n');
+
+    const include: string[] = [];
+    const exclude: string[] = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      // Skip empty lines and comments
+      if (!trimmed || trimmed.startsWith('#')) {
+        continue;
+      }
+
+      // Handle include patterns (starting with +)
+      if (trimmed.startsWith('+')) {
+        const pattern = trimmed.slice(1).trim();
+        if (pattern) {
+          include.push(pattern);
+        }
+      }
+      // Handle exclude patterns (starting with - or no prefix)
+      else {
+        const pattern = trimmed.startsWith('-') ? trimmed.slice(1).trim() : trimmed;
+        if (pattern) {
+          exclude.push(pattern);
+        }
+      }
+    }
+
+    return { include, exclude, configFilePath: configFile };
+  } catch (error) {
+    // File can't be read, return empty patterns
+    return { include: [], exclude: [], configFilePath: undefined };
+  }
+}
+
+/**
+ * Create .prompt-fs-to-ai file with current patterns
+ * @param rootDir - Directory where to create the file
+ * @param includePatterns - Include patterns to save
+ * @param excludePatterns - Exclude patterns to save
+ */
+export async function createPromptFsToAiFile(rootDir: string, includePatterns: string[], excludePatterns: string[]): Promise<void> {
+  const configFile = path.join(rootDir, '.prompt-fs-to-ai');
+  let content = '# Auto-generated .prompt-fs-to-ai file\n';
+  content += '# This file contains patterns used for the current project\n\n';
+
+  // Add include patterns
+  if (includePatterns.length > 0) {
+    content += '# Include patterns\n';
+    for (const pattern of includePatterns) {
+      content += `+${pattern}\n`;
+    }
+    content += '\n';
+  }
+
+  // Add exclude patterns
+  if (excludePatterns.length > 0) {
+    content += '# Exclude patterns\n';
+    for (const pattern of excludePatterns) {
+      content += `${pattern}\n`;
+    }
+  }
+
+  await fs.writeFile(configFile, content.trim());
 }
 
 /**
