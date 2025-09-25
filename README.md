@@ -63,6 +63,8 @@ prompt-fs-to-ai <directory> [options]
 
 *   `-o, --output <filename>`:  The name of the output Markdown file.  Defaults to `output.md`.
 
+*   `--patch`:  Create sequential patch files showing differences from the previous state instead of replacing the existing output file.  Useful for tracking changes over time without modifying the original file.
+
 ## Configuration File (.prompt-fs-to-ai)
 
 You can create a `.prompt-fs-to-ai` file in your project root directory to define default include and exclude patterns. This file uses a syntax similar to `.gitignore`.
@@ -137,6 +139,33 @@ build/
     ```bash
     prompt-fs-to-ai /path/to/my/project -p "**/*.{c,h}" -e "build tmp" -o my_c_docs.md
     ```
+
+6. **Creating sequential patch files instead of replacing existing documentation:**
+    ```bash
+    prompt-fs-to-ai /path/to/my/project --patch
+    ```
+    This will create timestamped `.patch` files showing the differences between the current state and the previous state, without modifying the original file. Each subsequent run creates a new patch file that accounts for all previous changes.
+
+## reverse
+
+Restore directory structure and files from markdown documentation or patch file.
+
+```bash
+prompt-fs-to-ai reverse <input-file> [output-directory]
+```
+
+*   `<input-file>`: Path to the markdown file created by `prompt-fs-to-ai` or a patch file (with `.patch.` in filename)
+*   `[output-directory]`: (Optional) Directory where to restore the files. Defaults to the input filename without extension.
+
+When a patch file is provided, the command will automatically find and apply all related patches up to and including the specified patch file, reconstructing the state of the documentation at that point in time.
+
+**Examples:**
+```bash
+# Restore from a specific patch file
+prompt-fs-to-ai reverse output.md.patch.2025-09-25T10-30-00-000Z restored-state
+
+# This will apply all patches from the initial state up to the specified timestamp
+```
 
 ## Development
 

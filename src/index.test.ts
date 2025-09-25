@@ -707,6 +707,206 @@ existing/
         await fs.rm(outputFile, { force: true })
         await fs.rm(path.join(testConfigDir, '.prompt-fs-to-ai'), { force: true })
       })
+
+      it('should create patch file when --patch option is used and output file exists', async () => {
+        // Create test files
+        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
+        await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
+
+        const outputFile = 'patch-test.md'
+
+        // Create initial file (this will create the .current file)
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
+
+        // Add new file
+        await fs.writeFile(path.join(testConfigDir, 'src', 'utils.js'), 'export const utils = "test"')
+
+        // Generate patch (this should create a timestamped patch file)
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
+
+        // Check that patch file with timestamp was created
+        const patchFiles = await fs.readdir('.')
+        const patchFile = patchFiles.find(file => file.startsWith(`${outputFile}.patch.`))
+        expect(patchFile).toBeDefined()
+
+        // Check patch content contains diff information
+        const patchContent = await fs.readFile(patchFile!, 'utf-8')
+        expect(patchContent).toContain('Index: patch-test.md')
+        expect(patchContent).toContain('Initial version')
+
+        // Check that current state file exists
+        const currentFileExists = await fs.stat(`${outputFile}.current`).then(() => true).catch(() => false)
+        expect(currentFileExists).toBe(true)
+
+        // Check that original file doesn't exist (not touched in patch mode)
+        const originalExists = await fs.stat(outputFile).then(() => true).catch(() => false)
+        expect(originalExists).toBe(false)
+
+        await fs.rm(outputFile, { force: true })
+        await fs.rm(`${outputFile}.current`, { force: true })
+        await fs.rm(patchFile!, { force: true })
+      })
+
+      it('should create normal file when --patch option is used but output file does not exist', async () => {
+        // Create test files
+        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
+        await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
+
+        const outputFile = 'new-patch-test.md'
+
+        // Generate with patch option but file doesn't exist yet
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
+
+        // Check that normal file was not created (patch mode initializes state only)
+        const fileExists = await fs.stat(outputFile).then(() => true).catch(() => false)
+        expect(fileExists).toBe(false)
+
+        // Check that current state file was created
+        const currentFileExists = await fs.stat(`${outputFile}.current`).then(() => true).catch(() => false)
+        expect(currentFileExists).toBe(true)
+
+        const patchFile = `${outputFile}.patch`
+        const patchExists = await fs.stat(patchFile).then(() => true).catch(() => false)
+        expect(patchExists).toBe(false)
+
+        await fs.rm(outputFile, { force: true })
+        await fs.rm(`${outputFile}.current`, { force: true })
+      })
+
+      it('should create sequential patches that account for previous changes', async () => {
+        // Create test files
+        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
+        await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
+
+        const outputFile = 'sequential-patch-test.md'
+
+        // First run - create initial state
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
+
+        // Second run - add file
+        await fs.writeFile(path.join(testConfigDir, 'src', 'utils.js'), 'export const utils = "test"')
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
+
+        // Third run - modify file
+        await fs.writeFile(path.join(testConfigDir, 'src', 'utils.js'), 'export const utils = "modified"')
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
+
+        // Check that multiple patch files were created
+        const patchFiles = (await fs.readdir('.')).filter(file => file.startsWith(`${outputFile}.patch.`))
+        expect(patchFiles.length).toBe(3) // Initial patch + two incremental patches
+
+        // Check that current state file contains latest changes
+        const currentContent = await fs.readFile(`${outputFile}.current`, 'utf-8')
+        expect(currentContent).toContain('export const utils = "modified"')
+
+        // Clean up
+        for (const patchFile of patchFiles) {
+          await fs.rm(patchFile, { force: true })
+        }
+        await fs.rm(`${outputFile}.current`, { force: true })
+      })
+    })
+
+    describe('Patch file reverse operations', () => {
+      beforeEach(async () => {
+        // Clean up any existing patch files
+        const allFiles = await fs.readdir('.')
+        for (const file of allFiles) {
+          if (file.includes('.patch.')) {
+            await fs.rm(file, { force: true }).catch(() => { })
+          }
+          if (file.endsWith('.current')) {
+            await fs.rm(file, { force: true }).catch(() => { })
+          }
+        }
+      })
+
+      it('should apply single patch file and restore files', async () => {
+        // Create test files
+        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
+        await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
+
+        const outputFile = 'patch-reverse-test.md'
+
+        // Create initial file with patch
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
+
+        // Add new file and create patch
+        await fs.writeFile(path.join(testConfigDir, 'src', 'utils.js'), 'export const utils = "test"')
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
+
+        // Find the patch files
+        const patchFiles = (await fs.readdir('.')).filter(file => file.startsWith(`${outputFile}.patch.`))
+        expect(patchFiles.length).toBe(2)
+
+        const patchFile = patchFiles[1] // Use the second (incremental) patch that contains both files
+
+        // Test reverse operation with patch file
+        const outputDir = 'patch-reverse-output'
+        await reverseMarkdownToFiles(patchFile, outputDir)
+
+        // Check that files were created correctly
+        const appContent = await fs.readFile(path.join(outputDir, 'src', 'app.ts'), 'utf-8')
+        const utilsContent = await fs.readFile(path.join(outputDir, 'src', 'utils.js'), 'utf-8')
+
+        expect(appContent).toBe('console.log("app")')
+        expect(utilsContent).toBe('export const utils = "test"')
+
+        // Clean up
+        for (const patch of patchFiles) {
+          await fs.rm(patch, { force: true })
+        }
+        await fs.rm(`${outputFile}.current`, { force: true })
+        await fs.rm(outputDir, { recursive: true, force: true })
+      })
+
+      it('should apply multiple patches up to specified one', async () => {
+        // Create test files
+        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
+        await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
+
+        const outputFile = 'multi-patch-reverse-test.md'
+
+        // Create initial file with patch
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
+
+        // Add first new file and create patch
+        await fs.writeFile(path.join(testConfigDir, 'src', 'utils.js'), 'export const utils = "v1"')
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
+
+        // Modify file and create second patch
+        await fs.writeFile(path.join(testConfigDir, 'src', 'utils.js'), 'export const utils = "v2"')
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
+
+        // Find all patch files
+        const patchFiles = (await fs.readdir('.'))
+          .filter(file => file.startsWith(`${outputFile}.patch.`))
+          .sort()
+
+        expect(patchFiles.length).toBe(3)
+
+        // Test reverse operation with first incremental patch (should have utils v1)
+        const outputDir1 = 'patch-reverse-output1'
+        await reverseMarkdownToFiles(patchFiles[1], outputDir1)
+
+        const utilsContent1 = await fs.readFile(path.join(outputDir1, 'src', 'utils.js'), 'utf-8')
+        expect(utilsContent1).toBe('export const utils = "v1"')
+
+        // Test reverse operation with second patch (should have utils v2)
+        const outputDir2 = 'patch-reverse-output2'
+        await reverseMarkdownToFiles(patchFiles[2], outputDir2)
+
+        const utilsContent2 = await fs.readFile(path.join(outputDir2, 'src', 'utils.js'), 'utf-8')
+        expect(utilsContent2).toBe('export const utils = "v2"')
+
+        // Clean up
+        for (const patch of patchFiles) {
+          await fs.rm(patch, { force: true })
+        }
+        await fs.rm(`${outputFile}.current`, { force: true })
+        await fs.rm(outputDir1, { recursive: true, force: true })
+        await fs.rm(outputDir2, { recursive: true, force: true })
+      })
     })
   })
 

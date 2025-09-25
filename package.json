@@ -1,6 +1,6 @@
 {
   "name": "prompt-fs-to-ai",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": {
     "name": "Alex Vedmedenko",
     "email": "vedmalex@gmail.com"
@@ -35,7 +35,9 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "@types/diff": "^8.0.0",
     "commander": "^13.1.0",
+    "diff": "^7.0.0",
     "glob": "^11.0.1"
   }
 }
