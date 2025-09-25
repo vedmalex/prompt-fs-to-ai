@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { Glob } from 'glob';
-import { basename, sep } from 'path';
+import { basename, sep, dirname } from 'path';
 import * as fs from 'node:fs/promises'; //Используем promises версию
 import * as path from 'node:path'
 import pkg from '../package.json' assert { type: 'json' }
@@ -233,6 +233,136 @@ ${commandString}
   console.log(`Markdown файл успешно создан: ${outputPath}`);
 }
 
+/**
+ * Parse markdown file and extract files information
+ * @param markdownContent - Content of the markdown file
+ * @returns Array of file objects with path and content
+ */
+export function parseMarkdownForFiles(markdownContent: string): Array<{ path: string; content: string }> {
+  const files: Array<{ path: string; content: string }> = [];
+
+  // Find the "## Список файлов" section
+  const listFilesIndex = markdownContent.indexOf('## Список файлов');
+  if (listFilesIndex === -1) {
+    return files;
+  }
+
+  // Get content after "## Список файлов"
+  const contentAfterHeader = markdownContent.slice(listFilesIndex);
+  const lines = contentAfterHeader.split('\n');
+
+  let i = 0;
+  while (i < lines.length) {
+    // Look for file path pattern: `path/to/file`
+    if (lines[i].trim().match(/^`[^`\n]+`$/)) {
+      const filePath = lines[i].trim().slice(1, -1); // Remove backticks
+
+      // Look for code block start on next lines
+      i++;
+      while (i < lines.length && lines[i].trim() === '') {
+        i++; // Skip empty lines
+      }
+
+      if (i < lines.length && lines[i].trim().match(/^```[\w]*$/)) {
+        // Found code block start, collect content until the matching closing ```
+        i++; // Skip the opening ```
+        const contentLines: string[] = [];
+        let braceCount = 1; // We just passed one opening ```
+
+        while (i < lines.length && braceCount > 0) {
+          const line = lines[i];
+
+          // Count opening and closing code blocks
+          if (line.trim() === '```') {
+            braceCount--;
+            if (braceCount === 0) {
+              // This is the closing ``` for our file block
+              break;
+            }
+          } else if (line.trim().match(/^```[\w]*$/)) {
+            // This is an opening ``` inside the content
+            braceCount++;
+          }
+
+          if (braceCount > 0) {
+            contentLines.push(line);
+          }
+          i++;
+        }
+
+        // Remove trailing empty lines
+        while (contentLines.length > 0 && contentLines[contentLines.length - 1].trim() === '') {
+          contentLines.pop();
+        }
+
+        files.push({
+          path: filePath,
+          content: contentLines.join('\n')
+        });
+      }
+    }
+    i++;
+  }
+
+  return files;
+}
+
+/**
+ * Reverse operation: create directory structure and files from markdown file
+ * @param markdownFilePath - Path to the markdown file
+ * @param outputDir - Output directory (optional, defaults to markdown filename without extension)
+ */
+export async function reverseMarkdownToFiles(
+  markdownFilePath: string,
+  outputDir?: string
+): Promise<void> {
+  // Read markdown file
+  const markdownContent = await fs.readFile(markdownFilePath, 'utf-8');
+
+  // Parse files from markdown
+  const files = parseMarkdownForFiles(markdownContent);
+
+  if (files.length === 0) {
+    throw new Error('No files found in the markdown file');
+  }
+
+  // Determine output directory
+  const markdownDir = path.dirname(markdownFilePath);
+  const defaultOutputName = path.basename(markdownFilePath, path.extname(markdownFilePath));
+
+  let finalOutputDir: string;
+  if (outputDir) {
+    // If outputDir is absolute path, use it as is
+    // If relative, resolve relative to markdown file directory
+    finalOutputDir = path.isAbsolute(outputDir)
+      ? outputDir
+      : path.join(markdownDir, outputDir);
+  } else {
+    // Default: create directory with markdown filename (without extension) in same directory
+    finalOutputDir = path.join(markdownDir, defaultOutputName);
+  }
+
+  // Create output directory
+  await fs.mkdir(finalOutputDir, { recursive: true });
+
+  // Create all files
+  for (const file of files) {
+    const fullPath = path.join(finalOutputDir, file.path);
+
+    // Create directory structure if needed
+    const dirPath = dirname(fullPath);
+    if (dirPath !== '.') {
+      await fs.mkdir(dirPath, { recursive: true });
+    }
+
+    // Write file content
+    await fs.writeFile(fullPath, file.content, 'utf-8');
+  }
+
+  console.log(`Структура файлов успешно восстановлена в директорию: ${path.resolve(finalOutputDir)}`);
+  console.log(`Создано файлов: ${files.length}`);
+}
+
 // CLI function for external usage
 export function runCLI() {
   const program = new Command();
@@ -240,7 +370,10 @@ export function runCLI() {
   program
     .name('doc-generator')
     .description('Generates a markdown documentation of a directory structure and file contents.')
-    .version(pkg.version) // Version from package.json
+    .version(pkg.version); // Version from package.json
+
+  // Main command for generating documentation
+  program
     .argument('<directory>', 'The root directory to document')
     .option('-p, --pattern <patterns...>', 'Glob patterns for files to include (space-separated)', [])
     .option('-e, --exclude <patterns...>', 'Glob patterns for files/directories to exclude', [])
@@ -264,6 +397,20 @@ export function runCLI() {
           options.output,
           docOptions
         );
+      } catch (error) {
+        console.error("Произошла ошибка:", error);
+        process.exit(1); // Exit with error code
+      }
+    });
+
+  // Reverse command for restoring files from markdown
+  program
+    .command('reverse <markdown-file> [output]')
+    .description('Restore directory structure and files from markdown documentation')
+    .action(async (markdownFile, output) => {
+      try {
+        const resolvedMarkdownFile = path.resolve(process.cwd(), markdownFile);
+        await reverseMarkdownToFiles(resolvedMarkdownFile, output);
       } catch (error) {
         console.error("Произошла ошибка:", error);
         process.exit(1); // Exit with error code
