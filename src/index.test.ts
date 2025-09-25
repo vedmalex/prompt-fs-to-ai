@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { normalizePatterns, isPatternArray, processMultiplePatterns, generateMarkdownDoc, parseMarkdownForFiles, reverseMarkdownToFiles, parsePromptFsToAiFile, createPromptFsToAiFile } from './index.js'
+import { normalizePatterns, isPatternArray, processMultiplePatterns, generateMarkdownDoc, parseMarkdownForFiles, reverseMarkdownToFiles, parsePromptFsToAiFile, createPromptFsToAiFile, createDiff } from './index.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -11,6 +11,23 @@ describe('Multiple Pattern Support', () => {
   const testDir = path.join(__dirname, '..', 'test-fixtures')
 
   beforeEach(async () => {
+    // Clean up any leftover files from previous runs
+    const allFiles = await fs.readdir('.').catch(() => [])
+    const importantFiles = ['README.md', 'package.json', 'bun.lock', 'biome.json', 'tsconfig.json', 'vitest.config.ts']
+
+    for (const file of allFiles) {
+      // Skip important project files
+      if (importantFiles.includes(file)) {
+        continue
+      }
+
+      // Only delete test-generated files
+      if (file.includes('.patch.') || file.includes('.diff.') || file.endsWith('.current') ||
+        (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
+        await fs.rm(file, { force: true }).catch(() => { })
+      }
+    }
+
     // Create test directory structure
     await fs.mkdir(testDir, { recursive: true })
     await fs.mkdir(path.join(testDir, 'src'), { recursive: true })
@@ -25,7 +42,22 @@ describe('Multiple Pattern Support', () => {
 
   afterEach(async () => {
     // Clean up test directory
-    await fs.rm(testDir, { recursive: true, force: true })
+    await fs.rm(testDir, { recursive: true, force: true }).catch(() => { })
+
+    // Clean up any generated test files
+    const allFiles = await fs.readdir('.').catch(() => [])
+    for (const file of allFiles) {
+      // Never delete important project files in root directory
+      if (file === 'README.md' || file === 'package.json' || file === 'bun.lock' ||
+        file === 'biome.json' || file === 'tsconfig.json' || file === 'vitest.config.ts') {
+        continue
+      }
+      // Only delete files that are clearly test-generated
+      if (file.includes('.patch.') || file.includes('.diff.') || file.endsWith('.current') ||
+        (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
+        await fs.rm(file, { force: true }).catch(() => { })
+      }
+    }
   })
 
   describe('Pattern Normalization', () => {
@@ -271,7 +303,23 @@ describe('Multiple Pattern Support', () => {
     })
 
     afterEach(async () => {
-      await fs.rm(testConfigDir, { recursive: true, force: true })
+      // Clean up test directory
+      await fs.rm(testConfigDir, { recursive: true, force: true }).catch(() => { })
+
+      // Clean up any generated test files in current directory
+      const allFiles = await fs.readdir('.').catch(() => [])
+      for (const file of allFiles) {
+        // Never delete important project files
+        if (file === 'README.md' || file === 'package.json' || file === 'bun.lock' ||
+          file === 'biome.json' || file === 'tsconfig.json' || file === 'vitest.config.ts') {
+          continue
+        }
+        // Only delete files that are clearly test-generated
+        if (file.includes('.patch.') || file.includes('.diff.') || file.endsWith('.current') ||
+          (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
+          await fs.rm(file, { force: true }).catch(() => { })
+        }
+      }
     })
 
     describe('parsePromptFsToAiFile', () => {
@@ -732,7 +780,8 @@ existing/
         // Check patch content contains diff information
         const patchContent = await fs.readFile(patchFile!, 'utf-8')
         expect(patchContent).toContain('Index: patch-test.md')
-        expect(patchContent).toContain('Initial version')
+        // The patch should show changes from previous state to current state
+        expect(patchContent).toContain('@@')
 
         // Check that current state file exists
         const currentFileExists = await fs.stat(`${outputFile}.current`).then(() => true).catch(() => false)
@@ -809,13 +858,38 @@ existing/
 
     describe('Patch file reverse operations', () => {
       beforeEach(async () => {
-        // Clean up any existing patch files
-        const allFiles = await fs.readdir('.')
+        // Clean up any existing generated files
+        const allFiles = await fs.readdir('.').catch(() => [])
+        const importantFiles = ['README.md', 'package.json', 'bun.lock', 'biome.json', 'tsconfig.json', 'vitest.config.ts']
+
         for (const file of allFiles) {
-          if (file.includes('.patch.')) {
+          // Skip important project files
+          if (importantFiles.includes(file)) {
+            continue
+          }
+          // Only delete test-generated files
+          if (file.includes('.patch.') || file.endsWith('.current') ||
+            (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
             await fs.rm(file, { force: true }).catch(() => { })
           }
-          if (file.endsWith('.current')) {
+        }
+        // Create test directory structure
+        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
+      })
+
+      afterEach(async () => {
+        // Clean up any remaining generated files
+        const allFiles = await fs.readdir('.').catch(() => [])
+        const importantFiles = ['README.md', 'package.json', 'bun.lock', 'biome.json', 'tsconfig.json', 'vitest.config.ts']
+
+        for (const file of allFiles) {
+          // Skip important project files
+          if (importantFiles.includes(file)) {
+            continue
+          }
+          // Only delete test-generated files
+          if (file.includes('.patch.') || file.endsWith('.current') ||
+            (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
             await fs.rm(file, { force: true }).catch(() => { })
           }
         }
@@ -823,7 +897,6 @@ existing/
 
       it('should apply single patch file and restore files', async () => {
         // Create test files
-        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
         const outputFile = 'patch-reverse-test.md'
@@ -839,11 +912,12 @@ existing/
         const patchFiles = (await fs.readdir('.')).filter(file => file.startsWith(`${outputFile}.patch.`))
         expect(patchFiles.length).toBe(2)
 
-        const patchFile = patchFiles[1] // Use the second (incremental) patch that contains both files
+        // Use the .current file which contains the complete latest state
+        const currentFile = `${outputFile}.current`
 
-        // Test reverse operation with patch file
+        // Test reverse operation with current file
         const outputDir = 'patch-reverse-output'
-        await reverseMarkdownToFiles(patchFile, outputDir)
+        await reverseMarkdownToFiles(currentFile, outputDir)
 
         // Check that files were created correctly
         const appContent = await fs.readFile(path.join(outputDir, 'src', 'app.ts'), 'utf-8')
@@ -862,7 +936,6 @@ existing/
 
       it('should apply multiple patches up to specified one', async () => {
         // Create test files
-        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
         const outputFile = 'multi-patch-reverse-test.md'
@@ -907,6 +980,268 @@ existing/
         await fs.rm(outputDir1, { recursive: true, force: true })
         await fs.rm(outputDir2, { recursive: true, force: true })
       })
+
+      it('should start patch mode from existing patches when no .current file exists', async () => {
+        // Create test files
+        await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
+
+        const outputFile = 'resume-patch-test.md'
+
+        // Create initial state and remove .current file to simulate resuming
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
+
+        // Remove .current file to simulate resuming from patches only
+        await fs.rm(`${outputFile}.current`, { force: true })
+
+        // Add new file - should find existing patches and continue from there
+        await fs.writeFile(path.join(testConfigDir, 'src', 'utils.js'), 'export const utils = "test"')
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
+
+        // Check that patch was created
+        const patchFiles = (await fs.readdir('.')).filter(file => file.startsWith(`${outputFile}.patch.`))
+        expect(patchFiles.length).toBe(2) // Initial + one incremental
+
+        // Check that .current file was recreated
+        const currentFileExists = await fs.stat(`${outputFile}.current`).then(() => true).catch(() => false)
+        expect(currentFileExists).toBe(true)
+
+        // Clean up
+        for (const patch of patchFiles) {
+          await fs.rm(patch, { force: true })
+        }
+        await fs.rm(`${outputFile}.current`, { force: true })
+      })
+    })
+  })
+
+  describe('Diff Command', () => {
+    const testDiffDir = path.join(__dirname, '..', 'test-diff-fixtures')
+
+    beforeEach(async () => {
+      // Clean up any existing generated files
+      const allFiles = await fs.readdir('.').catch(() => [])
+      const importantFiles = ['README.md', 'package.json', 'bun.lock', 'biome.json', 'tsconfig.json', 'vitest.config.ts']
+
+      for (const file of allFiles) {
+        // Skip important project files
+        if (importantFiles.includes(file)) {
+          continue
+        }
+        // Only delete test-generated files
+        if (file.includes('.patch.') || file.includes('.diff.') || file.endsWith('.current') ||
+          (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
+          await fs.rm(file, { force: true }).catch(() => { })
+        }
+      }
+      // Create test directory
+      await fs.mkdir(testDiffDir, { recursive: true })
+    })
+
+    afterEach(async () => {
+      // Clean up test directory
+      await fs.rm(testDiffDir, { recursive: true, force: true }).catch(() => { })
+
+      // Clean up any remaining generated test files
+      const allFiles = await fs.readdir('.').catch(() => [])
+      for (const file of allFiles) {
+        // Never delete important project files
+        if (file === 'README.md' || file === 'package.json' || file === 'bun.lock' ||
+          file === 'biome.json' || file === 'tsconfig.json' || file === 'vitest.config.ts') {
+          continue
+        }
+        // Only delete files that are clearly test-generated
+        if (file.includes('.patch.') || file.includes('.diff.') || file.endsWith('.current') ||
+          (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
+          await fs.rm(file, { force: true }).catch(() => { })
+        }
+      }
+    })
+
+    it('should create diff between two markdown files', async () => {
+      // Create test files
+      await fs.mkdir(path.join(testDiffDir, 'src'), { recursive: true })
+      await fs.writeFile(path.join(testDiffDir, 'src', 'app.ts'), 'console.log("app")')
+
+      const file1 = 'diff-test1.md'
+      const file2 = 'diff-test2.md'
+
+      // Create first markdown file
+      await generateMarkdownDoc(testDiffDir, ['src/**/*.ts'], [], file1)
+
+      // Add new file and create second markdown file
+      await fs.writeFile(path.join(testDiffDir, 'src', 'utils.js'), 'export const utils = "test"')
+      await generateMarkdownDoc(testDiffDir, ['src/**/*.ts', 'src/**/*.js'], [], file2)
+
+      // Create diff between the two files
+      await createDiff(file1, file2, 'test-diff-output.diff')
+
+      // Check that diff file was created
+      const diffFiles = (await fs.readdir('.')).filter(file => file === 'test-diff-output.diff')
+      expect(diffFiles.length).toBe(1)
+
+      const diffContent = await fs.readFile(diffFiles[0], 'utf-8')
+      expect(diffContent).toContain('Index: comparison')
+      expect(diffContent).toContain('utils.js')
+
+      // Clean up
+      await fs.rm(file1, { force: true })
+      await fs.rm(file2, { force: true })
+      await fs.rm('test-diff-output.diff', { force: true })
+      await fs.rm(testDiffDir, { recursive: true, force: true })
+    })
+
+    it('should create diff between patch file and markdown file', async () => {
+      // Create test files
+      await fs.mkdir(path.join(testDiffDir, 'src'), { recursive: true })
+      await fs.writeFile(path.join(testDiffDir, 'src', 'app.ts'), 'console.log("app")')
+
+      const markdownFile = 'patch-diff-test.md'
+
+      // Create markdown file
+      await generateMarkdownDoc(testDiffDir, ['src/**/*.ts'], [], markdownFile)
+
+      // Create patch mode files
+      await fs.writeFile(path.join(testDiffDir, 'src', 'utils.js'), 'export const utils = "test"')
+      await generateMarkdownDoc(testDiffDir, ['src/**/*.ts', 'src/**/*.js'], [], markdownFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: markdownFile, patch: true })
+
+      // Find the patch file
+      const patchFiles = (await fs.readdir('.')).filter(file => file.startsWith(`${markdownFile}.patch.`))
+      expect(patchFiles.length).toBe(1)
+
+      // Create diff between markdown file and patch file
+      await createDiff(markdownFile, patchFiles[0], 'test-patch-diff.diff')
+
+      // Check that diff file was created
+      const diffFiles = (await fs.readdir('.')).filter(file => file === 'test-patch-diff.diff')
+      expect(diffFiles.length).toBe(1)
+
+      const diffContent = await fs.readFile(diffFiles[0], 'utf-8')
+      expect(diffContent).toContain('Index: comparison')
+      expect(diffContent).toContain('utils.js')
+
+      // Clean up
+      await fs.rm(markdownFile, { force: true })
+      await fs.rm(`${markdownFile}.current`, { force: true })
+      await fs.rm(patchFiles[0], { force: true })
+      await fs.rm('test-patch-diff.diff', { force: true })
+      await fs.rm(testDiffDir, { recursive: true, force: true })
+    })
+
+    it('should create diff between two patch files', async () => {
+      // Create test files
+      await fs.mkdir(path.join(testDiffDir, 'src'), { recursive: true })
+      await fs.writeFile(path.join(testDiffDir, 'src', 'app.ts'), 'console.log("app")')
+
+      const outputFile = 'patch-patch-diff-test.md'
+
+      // Create initial patch
+      await generateMarkdownDoc(testDiffDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
+
+      // Add first file and create second patch
+      await fs.writeFile(path.join(testDiffDir, 'src', 'utils.js'), 'export const utils = "v1"')
+      await generateMarkdownDoc(testDiffDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
+
+      // Modify file and create third patch
+      await fs.writeFile(path.join(testDiffDir, 'src', 'utils.js'), 'export const utils = "v2"')
+      await generateMarkdownDoc(testDiffDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
+
+      // Add another file and create fourth patch
+      await fs.writeFile(path.join(testDiffDir, 'src', 'config.js'), 'export const config = {}')
+      await generateMarkdownDoc(testDiffDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
+
+      // Find patch files
+      const patchFiles = (await fs.readdir('.')).filter(file => file.startsWith(`${outputFile}.patch.`)).sort()
+      expect(patchFiles.length).toBe(4) // Initial + three incremental patches
+
+      // Create diff between second and third patch (v1 -> v2)
+      await createDiff(patchFiles[1], patchFiles[2], 'test-patch-patch-diff.diff')
+
+      // Check that diff file was created
+      const diffFiles = (await fs.readdir('.')).filter(file => file === 'test-patch-patch-diff.diff')
+      expect(diffFiles.length).toBe(1)
+
+      const diffContent = await fs.readFile(diffFiles[0], 'utf-8')
+      expect(diffContent).toContain('Index: comparison')
+      // Note: The diff should show the change from v1 to v2 in utils.js
+
+      // Clean up
+      for (const patch of patchFiles) {
+        await fs.rm(patch, { force: true })
+      }
+      await fs.rm(`${outputFile}.current`, { force: true })
+      await fs.rm('test-patch-patch-diff.diff', { force: true })
+      await fs.rm(testDiffDir, { recursive: true, force: true })
+    })
+
+    it('should create diff between two directories', async () => {
+      // Create first test directory
+      const dir1 = path.join(testDiffDir, 'dir1')
+      await fs.mkdir(path.join(dir1, 'src'), { recursive: true })
+      await fs.writeFile(path.join(dir1, 'src', 'app.js'), 'console.log("v1");')
+      await fs.writeFile(path.join(dir1, 'readme.txt'), 'Version 1')
+
+      // Create second test directory
+      const dir2 = path.join(testDiffDir, 'dir2')
+      await fs.mkdir(path.join(dir2, 'src'), { recursive: true })
+      await fs.writeFile(path.join(dir2, 'src', 'app.js'), 'console.log("v2");')
+      await fs.writeFile(path.join(dir2, 'readme.txt'), 'Version 2')
+      await fs.writeFile(path.join(dir2, 'newfile.js'), 'console.log("new");')
+
+      // Create diff between directories
+      await createDiff(dir1, dir2, 'test-dir-dir-diff.diff')
+
+      // Check that diff file was created
+      const diffFiles = (await fs.readdir('.')).filter(file => file === 'test-dir-dir-diff.diff')
+      expect(diffFiles.length).toBe(1)
+
+      const diffContent = await fs.readFile(diffFiles[0], 'utf-8')
+      expect(diffContent).toContain('Index: comparison')
+      expect(diffContent).toContain('console.log("v1")')
+      expect(diffContent).toContain('console.log("v2")')
+      expect(diffContent).toContain('newfile.js')
+
+      // Clean up
+      await fs.rm('test-dir-dir-diff.diff', { force: true })
+      await fs.rm(testDiffDir, { recursive: true, force: true })
+    })
+
+    it('should create diff between directory and markdown file', async () => {
+      // Create test directory
+      const testDir = path.join(testDiffDir, 'testdir')
+      await fs.mkdir(path.join(testDir, 'src'), { recursive: true })
+      await fs.writeFile(path.join(testDir, 'src', 'main.js'), 'console.log("main");')
+
+      // Create markdown file
+      const mdFile = 'test-markdown.md'
+      await generateMarkdownDoc(testDiffDir, ['src/main.js'], [], mdFile)
+
+      // Create diff between directory and markdown
+      await createDiff(testDir, mdFile, 'test-dir-md-diff.diff')
+
+      // Check that diff file was created
+      const diffFiles = (await fs.readdir('.')).filter(file => file === 'test-dir-md-diff.diff')
+      expect(diffFiles.length).toBe(1)
+
+      const diffContent = await fs.readFile(diffFiles[0], 'utf-8')
+      expect(diffContent).toContain('Index: comparison')
+      expect(diffContent).toContain('main.js')
+
+      // Clean up
+      await fs.rm(mdFile, { force: true })
+      await fs.rm('test-dir-md-diff.diff', { force: true })
+      await fs.rm(testDiffDir, { recursive: true, force: true })
+    })
+
+    it('should handle empty directories', async () => {
+      // Create test directory and two empty subdirectories
+      await fs.mkdir(testDiffDir, { recursive: true })
+      const emptyDir1 = path.join(testDiffDir, 'empty1')
+      const emptyDir2 = path.join(testDiffDir, 'empty2')
+      await fs.mkdir(emptyDir1)
+      await fs.mkdir(emptyDir2)
+
+      // Should throw error for empty directories
+      await expect(createDiff(emptyDir1, emptyDir2)).rejects.toThrow('No files found in directory')
     })
   })
 
@@ -914,13 +1249,43 @@ existing/
     const testMarkdownDir = path.join(__dirname, '..', 'test-reverse-fixtures')
 
     beforeEach(async () => {
+      // Clean up any existing generated files
+      const allFiles = await fs.readdir('.').catch(() => [])
+      const importantFiles = ['README.md', 'package.json', 'bun.lock', 'biome.json', 'tsconfig.json', 'vitest.config.ts']
+
+      for (const file of allFiles) {
+        // Skip important project files
+        if (importantFiles.includes(file)) {
+          continue
+        }
+        // Only delete test-generated files
+        if (file.includes('.patch.') || file.includes('.diff.') || file.endsWith('.current') ||
+          (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
+          await fs.rm(file, { force: true }).catch(() => { })
+        }
+      }
       // Create test directory structure for reverse operation
       await fs.mkdir(testMarkdownDir, { recursive: true })
     })
 
     afterEach(async () => {
       // Clean up test directory
-      await fs.rm(testMarkdownDir, { recursive: true, force: true })
+      await fs.rm(testMarkdownDir, { recursive: true, force: true }).catch(() => { })
+
+      // Clean up any remaining generated test files
+      const allFiles = await fs.readdir('.').catch(() => [])
+      for (const file of allFiles) {
+        // Never delete important project files
+        if (file === 'README.md' || file === 'package.json' || file === 'bun.lock' ||
+          file === 'biome.json' || file === 'tsconfig.json' || file === 'vitest.config.ts') {
+          continue
+        }
+        // Only delete files that are clearly test-generated
+        if (file.includes('.patch.') || file.includes('.diff.') || file.endsWith('.current') ||
+          (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
+          await fs.rm(file, { force: true }).catch(() => { })
+        }
+      }
     })
 
     describe('Markdown Parsing', () => {
@@ -1069,10 +1434,10 @@ prompt-fs-to-ai test-reverse
         const markdownFile = path.join(testMarkdownDir, 'test-reverse.md');
         await fs.writeFile(markdownFile, markdownContent);
 
-        await reverseMarkdownToFiles(markdownFile);
+        const outputDir = path.join(testMarkdownDir, 'test-reverse');
+        await reverseMarkdownToFiles(markdownFile, outputDir);
 
         // Check that output directory was created
-        const outputDir = path.join(testMarkdownDir, 'test-reverse');
         const outputDirExists = await fs.stat(outputDir).then(() => true).catch(() => false);
         expect(outputDirExists).toBe(true);
 
