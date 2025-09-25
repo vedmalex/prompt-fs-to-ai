@@ -77,7 +77,7 @@ interface Options {  // Interface for command line options
   pattern: string | string[];  // Support single pattern or multiple patterns
   exclude: string[];
   output: string;
-  patch: boolean;  // Create patch instead of replacing existing file
+  patch: boolean;  // Create diff instead of replacing existing file
 }
 
 export async function generateMarkdownDoc(
@@ -303,7 +303,7 @@ ${commandString}
     if (previousContent) {
       // Create patch between previous content and new content
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const patchFileName = `${finalOutputFile}.patch.${timestamp}`;
+      const patchFileName = `${finalOutputFile}.${timestamp}.diff`;
       const patchPath = path.resolve(process.cwd(), patchFileName);
 
       const patch = createPatch(
@@ -315,11 +315,11 @@ ${commandString}
       );
 
       await fs.writeFile(patchPath, patch);
-      console.log(`Патч создан: ${patchPath}`);
+      console.log(`Файл diff создан: ${patchPath}`);
     } else {
       // First run - create a patch with full content (from empty to initial state)
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const patchFileName = `${finalOutputFile}.patch.${timestamp}`;
+      const patchFileName = `${finalOutputFile}.${timestamp}.diff`;
       const patchPath = path.resolve(process.cwd(), patchFileName);
 
       const patch = createPatch(
@@ -331,7 +331,7 @@ ${commandString}
       );
 
       await fs.writeFile(patchPath, patch);
-      console.log(`Начальный патч создан: ${patchPath}`);
+      console.log(`Начальный файл diff создан: ${patchPath}`);
     }
 
     // Update current state file
@@ -541,19 +541,18 @@ function applyUnifiedPatch(content: string, patchContent: string): string {
 }
 
 /**
- * Find all related patch files for a given output file
+ * Find all related diff files for a given output file
  * @param outputFilePath - Path to the output file (e.g., "output.md")
- * @returns Array of patch file paths sorted by timestamp
+ * @returns Array of diff file paths sorted by timestamp
  */
 async function findRelatedPatchesForOutput(outputFilePath: string): Promise<string[]> {
   const dir = path.dirname(outputFilePath);
   const baseName = path.basename(outputFilePath);
-  const patchPrefix = `${baseName}.patch.`;
 
-  // Find all patch files with the same base name
+  // Find all diff files with the same base name (format: basename.timestamp.diff)
   const allFiles = await fs.readdir(dir);
   const patchFiles = allFiles
-    .filter(file => file.startsWith(patchPrefix))
+    .filter(file => file.startsWith(`${baseName}.`) && file.endsWith('.diff'))
     .map(file => path.join(dir, file))
     .sort(); // Sort by timestamp
 
@@ -561,28 +560,27 @@ async function findRelatedPatchesForOutput(outputFilePath: string): Promise<stri
 }
 
 /**
- * Find all related patch files for a given patch file
- * @param patchFilePath - Path to a patch file
- * @returns Array of patch file paths sorted by timestamp
+ * Find all related diff files for a given diff file
+ * @param patchFilePath - Path to a diff file
+ * @returns Array of diff file paths sorted by timestamp
  */
 async function findRelatedPatches(patchFilePath: string): Promise<string[]> {
   const dir = path.dirname(patchFilePath);
   const baseName = path.basename(patchFilePath);
 
   // Extract base name without timestamp and extension
-  // e.g., "output.md.patch.2025-09-25T13-25-02-770Z" -> "output.md"
-  const baseMatch = baseName.match(/^(.+)\.patch\./);
+  // e.g., "output.md.2025-09-25T13-25-02-770Z.diff" -> "output.md"
+  const baseMatch = baseName.match(/^(.+)\..+\.diff$/);
   if (!baseMatch) {
-    throw new Error(`Invalid patch file name format: ${baseName}`);
+    throw new Error(`Invalid diff file name format: ${baseName}`);
   }
 
   const outputBaseName = baseMatch[1];
-  const patchPrefix = `${outputBaseName}.patch.`;
 
-  // Find all patch files with the same base name
+  // Find all diff files with the same base name (format: basename.timestamp.diff)
   const allFiles = await fs.readdir(dir);
   const patchFiles = allFiles
-    .filter(file => file.startsWith(patchPrefix))
+    .filter(file => file.startsWith(`${outputBaseName}.`) && file.endsWith('.diff'))
     .map(file => path.join(dir, file))
     .sort(); // Sort by timestamp
 
@@ -607,8 +605,8 @@ async function findLatestPatchContent(outputFilePath: string): Promise<string> {
 }
 
 /**
- * Apply all patches up to and including the specified patch file
- * @param patchFilePath - Path to the target patch file
+ * Apply all patches up to and including the specified diff file
+ * @param patchFilePath - Path to the target diff file
  * @returns Final content after applying all patches
  */
 async function applyPatchesUpTo(patchFilePath: string): Promise<string> {
@@ -621,7 +619,7 @@ async function applyPatchesUpTo(patchFilePath: string): Promise<string> {
   // Find the target patch index
   const targetIndex = normalizedRelatedPatches.indexOf(normalizedPatchFilePath);
   if (targetIndex === -1) {
-    throw new Error(`Target patch file not found in related patches: ${patchFilePath}`);
+    throw new Error(`Target diff file not found in related patches: ${patchFilePath}`);
   }
 
   // Take patches up to and including the target
@@ -784,7 +782,7 @@ async function generateMarkdownFromDirectory(dirPath: string): Promise<string> {
 }
 
 /**
- * Create a diff between two files or directories (can be markdown files, patch files, or directories)
+ * Create a diff between two files or directories (can be markdown files, diff files, or directories)
  * @param input1Path - Path to first file/directory (markdown, patch, or directory)
  * @param input2Path - Path to second file/directory (markdown, patch, or directory)
  * @param outputPath - Path where to save the diff file
@@ -797,27 +795,31 @@ export async function createDiff(
   const resolvedInput1 = path.resolve(process.cwd(), input1Path);
   const resolvedInput2 = path.resolve(process.cwd(), input2Path);
 
-  // Check if inputs are directories and generate markdown content
-  let content1: string;
-  let content2: string;
+  // Get file arrays from inputs
+  let files1: Array<{ path: string; content: string }>;
+  let files2: Array<{ path: string; content: string }>;
 
   // Handle first input
   try {
     const stat1 = await fs.stat(resolvedInput1);
     if (stat1.isDirectory()) {
-      content1 = await generateMarkdownFromDirectory(resolvedInput1);
-    } else if (path.basename(resolvedInput1).includes('.patch.')) {
-      // If it's a patch file, try to read corresponding .current file first
-      const currentFile = resolvedInput1.replace(/\.patch\..*$/, '.current');
+      const content1 = await generateMarkdownFromDirectory(resolvedInput1);
+      files1 = parseMarkdownForFiles(content1);
+    } else if (path.basename(resolvedInput1).endsWith('.diff')) {
+      // If it's a diff file, try to read corresponding .current file first
+      const currentFile = resolvedInput1.replace(/\..+\.diff$/, '.current');
       try {
-        content1 = await fs.readFile(currentFile, 'utf-8');
+        const content1 = await fs.readFile(currentFile, 'utf-8');
+        files1 = parseMarkdownForFiles(content1);
       } catch (error) {
         // If no .current file, apply patches
-        content1 = await applyPatchesUpTo(resolvedInput1);
+        const content1 = await applyPatchesUpTo(resolvedInput1);
+        files1 = parseMarkdownForFiles(content1);
       }
     } else {
       // Regular markdown file
-      content1 = await fs.readFile(resolvedInput1, 'utf-8');
+      const content1 = await fs.readFile(resolvedInput1, 'utf-8');
+      files1 = parseMarkdownForFiles(content1);
     }
   } catch (error) {
     throw new Error(`Cannot read first input ${input1Path}: ${error}`);
@@ -827,32 +829,30 @@ export async function createDiff(
   try {
     const stat2 = await fs.stat(resolvedInput2);
     if (stat2.isDirectory()) {
-      content2 = await generateMarkdownFromDirectory(resolvedInput2);
-    } else if (path.basename(resolvedInput2).includes('.patch.')) {
-      // If it's a patch file, try to read corresponding .current file first
-      const currentFile = resolvedInput2.replace(/\.patch\..*$/, '.current');
+      const content2 = await generateMarkdownFromDirectory(resolvedInput2);
+      files2 = parseMarkdownForFiles(content2);
+    } else if (path.basename(resolvedInput2).endsWith('.diff')) {
+      // If it's a diff file, try to read corresponding .current file first
+      const currentFile = resolvedInput2.replace(/\..+\.diff$/, '.current');
       try {
-        content2 = await fs.readFile(currentFile, 'utf-8');
+        const content2 = await fs.readFile(currentFile, 'utf-8');
+        files2 = parseMarkdownForFiles(content2);
       } catch (error) {
         // If no .current file, apply patches
-        content2 = await applyPatchesUpTo(resolvedInput2);
+        const content2 = await applyPatchesUpTo(resolvedInput2);
+        files2 = parseMarkdownForFiles(content2);
       }
     } else {
       // Regular markdown file
-      content2 = await fs.readFile(resolvedInput2, 'utf-8');
+      const content2 = await fs.readFile(resolvedInput2, 'utf-8');
+      files2 = parseMarkdownForFiles(content2);
     }
   } catch (error) {
     throw new Error(`Cannot read second input ${input2Path}: ${error}`);
   }
 
-  // Create diff
-  const diff = createPatch(
-    'comparison',
-    content1,
-    content2,
-    path.basename(input1Path),
-    path.basename(input2Path)
-  );
+  // Create file-based diff
+  const diff = await createFileBasedDiff(files1, files2, path.basename(input1Path), path.basename(input2Path));
 
   // Determine output path
   let finalOutputPath: string;
@@ -864,7 +864,7 @@ export async function createDiff(
     // Default: create diff file with timestamp
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const baseName = path.basename(input1Path, path.extname(input1Path));
-    finalOutputPath = path.resolve(process.cwd(), `${baseName}.diff.${timestamp}`);
+    finalOutputPath = path.resolve(process.cwd(), `${baseName}.${timestamp}.diff`);
   }
 
   // Save diff
@@ -873,8 +873,158 @@ export async function createDiff(
 }
 
 /**
- * Reverse operation: create directory structure and files from markdown file or patch file
- * @param inputFilePath - Path to the markdown file or patch file
+ * Create a file-based diff between two file arrays
+ * @param files1 - Files from first input
+ * @param files2 - Files from second input
+ * @param label1 - Label for first input
+ * @param label2 - Label for second input
+ * @returns Unified diff string
+ */
+/**
+ * Generate directory tree string from file array
+ * @param files - Array of files with paths
+ * @param rootName - Name for the root directory
+ * @returns Directory tree as string
+ */
+function generateTreeFromFiles(files: Array<{ path: string; content: string }>, rootName: string): string {
+  const filePaths = files.map(f => f.path);
+  return buildDirectoryStructure(filePaths, rootName);
+}
+
+async function createFileBasedDiff(
+  files1: Array<{ path: string; content: string }>,
+  files2: Array<{ path: string; content: string }>,
+  label1: string,
+  label2: string
+): Promise<string> {
+  // Create hash maps for quick lookup
+  const fileMap1 = new Map<string, string>();
+  const fileMap2 = new Map<string, string>();
+
+  for (const file of files1) {
+    fileMap1.set(file.path, file.content);
+  }
+
+  for (const file of files2) {
+    fileMap2.set(file.path, file.content);
+  }
+
+  // Generate directory trees with consistent root name for comparison
+  const tree1 = generateTreeFromFiles(files1, 'project');
+  const tree2 = generateTreeFromFiles(files2, 'project');
+
+  // Collect all unique file paths
+  const allPaths = new Set([...fileMap1.keys(), ...fileMap2.keys()]);
+  const sortedPaths = Array.from(allPaths).sort();
+
+  // Check if we have TTY for progress bar
+  const hasTTY = process.stdout.isTTY;
+  let progressCurrent = 0;
+  const progressTotal = sortedPaths.length;
+
+  // Collect diff sections
+  const diffSections: string[] = [];
+  diffSections.push(`Index: file comparison`);
+  diffSections.push(`===================================================================`);
+  diffSections.push(`--- ${label1}`);
+  diffSections.push(`+++ ${label2}`);
+  diffSections.push(``);
+
+  // Add directory structure diff if trees are different
+  if (tree1 !== tree2) {
+    diffSections.push(`## Directory Structure Changes`);
+    diffSections.push(``);
+    const treeDiff = createPatch('Directory Structure', tree1, tree2, `a/${label1}`, `b/${label2}`);
+    // Remove the header lines since we already have them
+    const treeDiffLines = treeDiff.split('\n');
+    const contentStartIndex = treeDiffLines.findIndex(line => line.startsWith('@@'));
+    if (contentStartIndex !== -1) {
+      diffSections.push(...treeDiffLines.slice(contentStartIndex));
+    } else {
+      // If no actual diff content, just show the trees
+      diffSections.push(`### ${label1} Structure:`);
+      diffSections.push(tree1);
+      diffSections.push(``);
+      diffSections.push(`### ${label2} Structure:`);
+      diffSections.push(tree2);
+    }
+    diffSections.push(``);
+  }
+
+  // Add file content changes section
+  if (sortedPaths.length > 0) {
+    diffSections.push(`## File Content Changes`);
+    diffSections.push(``);
+  }
+
+  for (const filePath of sortedPaths) {
+    // Update progress
+    progressCurrent++;
+    if (hasTTY) {
+      const progress = Math.round((progressCurrent / progressTotal) * 100);
+      process.stdout.write(`\rПрогресс: [${'='.repeat(progress / 5)}${' '.repeat(20 - progress / 5)}] ${progress}%`);
+    }
+
+    const content1 = fileMap1.get(filePath);
+    const content2 = fileMap2.get(filePath);
+
+    if (content1 === undefined && content2 !== undefined) {
+      // File added in second input
+      diffSections.push(`diff --git a/${filePath} b/${filePath}`);
+      diffSections.push(`new file mode 100644`);
+      diffSections.push(`index 0000000..${'0'.repeat(7)}`);
+      diffSections.push(`--- /dev/null`);
+      diffSections.push(`+++ b/${filePath}`);
+      diffSections.push(`@@ -0,0 +1,${content2.split('\n').length} @@`);
+
+      const lines = content2.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        diffSections.push(`+${lines[i]}`);
+      }
+      diffSections.push(``);
+
+    } else if (content1 !== undefined && content2 === undefined) {
+      // File removed from second input
+      diffSections.push(`diff --git a/${filePath} b/${filePath}`);
+      diffSections.push(`deleted file mode 100644`);
+      diffSections.push(`index ${'0'.repeat(7)}..0000000`);
+      diffSections.push(`--- a/${filePath}`);
+      diffSections.push(`+++ /dev/null`);
+      diffSections.push(`@@ -1,${content1.split('\n').length} +0,0 @@`);
+
+      const lines = content1.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        diffSections.push(`-${lines[i]}`);
+      }
+      diffSections.push(``);
+
+    } else if (content1 !== content2) {
+      // File modified
+      const fileDiff = createPatch(filePath, content1!, content2!, `a/${filePath}`, `b/${filePath}`);
+      // Remove the header lines since we already have them
+      const diffLines = fileDiff.split('\n');
+      const contentStartIndex = diffLines.findIndex(line => line.startsWith('@@'));
+      if (contentStartIndex !== -1) {
+        diffSections.push(`diff --git a/${filePath} b/${filePath}`);
+        diffSections.push(`index ${'0'.repeat(7)}..${'0'.repeat(7)}`);
+        diffSections.push(...diffLines.slice(contentStartIndex));
+        diffSections.push(``);
+      }
+    }
+    // If content1 === content2, file is unchanged, skip it
+  }
+
+  // Clear progress bar
+  if (hasTTY) {
+    process.stdout.write('\r' + ' '.repeat(50) + '\r');
+  }
+
+  return diffSections.join('\n');
+}
+
+/**
+ * Reverse operation: create directory structure and files from markdown file or diff file
+ * @param inputFilePath - Path to the markdown file or diff file
  * @param outputDir - Output directory (optional, defaults to input filename without extension)
  * @param filesToExtract - Array of file patterns to extract (optional, extracts all if not specified)
  */
@@ -885,16 +1035,16 @@ export async function reverseMarkdownToFiles(
 ): Promise<void> {
   let markdownContent: string;
 
-  // Check if input file is a patch file
-  const isPatchFile = path.basename(inputFilePath).includes('.patch.');
+  // Check if input file is a diff file
+  const isPatchFile = path.basename(inputFilePath).endsWith('.diff');
 
   if (isPatchFile) {
-    console.log(`Обнаружен файл патча: ${inputFilePath}`);
-    console.log('Применяю все патчи до указанного включительно...');
+    console.log(`Обнаружен файл diff: ${inputFilePath}`);
+    console.log('Применяю все файлы diff до указанного включительно...');
 
     // Apply all patches up to the specified one
     markdownContent = await applyPatchesUpTo(inputFilePath);
-    console.log('Все патчи применены успешно');
+    console.log('Все файлы diff применены успешно');
   } else {
     // Read regular markdown file
     markdownContent = await fs.readFile(inputFilePath, 'utf-8');
@@ -981,10 +1131,10 @@ export function runCLI() {
     .description('Generates a markdown documentation of a directory structure and file contents.')
     .version(pkg.version); // Version from package.json
 
-  // Reverse command for restoring files from markdown or patch file
+  // Reverse command for restoring files from markdown or diff file
   program
     .command('reverse <input-file> [output]')
-    .description('Restore directory structure and files from markdown documentation or patch file')
+    .description('Restore directory structure and files from markdown documentation or diff file')
     .option('-f, --files <files...>', 'Extract only specified files (wildcards supported)')
     .action(async (inputFile, output, options) => {
       try {
@@ -999,7 +1149,7 @@ export function runCLI() {
   // Diff command for comparing two files or directories
   program
     .command('diff <input1> <input2> [output]')
-    .description('Create a diff between two files or directories (markdown, patch files, or directories)')
+    .description('Create a diff between two files or directories (markdown, diff files, or directories)')
     .action(async (input1, input2, output) => {
       try {
         await createDiff(input1, input2, output);
@@ -1015,7 +1165,7 @@ export function runCLI() {
     .option('-p, --pattern <patterns...>', 'Glob patterns for files to include (space-separated)', [])
     .option('-e, --exclude <patterns...>', 'Glob patterns for files/directories to exclude', [])
     .option('-o, --output <filename>', `Output file name (default: based on directory name)`)
-    .option('--patch', 'Create patch file instead of replacing existing output file')
+    .option('--patch', 'Create diff file instead of replacing existing output file')
     .action(async (directory, options) => {
       try {
         const resolvedDirectory = path.resolve(process.cwd(), directory);
