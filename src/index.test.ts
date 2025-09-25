@@ -8,7 +8,12 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 describe('Multiple Pattern Support', () => {
-  const testDir = path.join(__dirname, '..', 'test-fixtures')
+  const testDir = path.join(__dirname, '..', 'tests', 'test-fixtures')
+
+  beforeAll(async () => {
+    // Create tests directory
+    await fs.mkdir(path.join(__dirname, '..', 'tests'), { recursive: true })
+  })
 
   beforeEach(async () => {
     // Clean up any leftover files from previous runs
@@ -22,7 +27,7 @@ describe('Multiple Pattern Support', () => {
       }
 
       // Only delete test-generated files
-      if (file.includes('.patch.') || file.includes('.diff.') || file.endsWith('.current') ||
+      if (file.includes('.') || file.includes('.') || file.endsWith('.current') ||
         (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
         await fs.rm(file, { force: true }).catch(() => { })
       }
@@ -53,7 +58,7 @@ describe('Multiple Pattern Support', () => {
         continue
       }
       // Only delete files that are clearly test-generated
-      if (file.includes('.patch.') || file.includes('.diff.') || file.endsWith('.current') ||
+      if (file.includes('.') || file.includes('.') || file.endsWith('.current') ||
         (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
         await fs.rm(file, { force: true }).catch(() => { })
       }
@@ -235,7 +240,7 @@ describe('Multiple Pattern Support', () => {
 
   describe('Full Integration Tests', () => {
     it('should generate complete markdown document with single pattern', async () => {
-      const outputFile = 'integration-single.md'
+      const outputFile = path.join(__dirname, '..', 'tests', 'integration-single.md')
       await generateMarkdownDoc(
         testDir,
         '**/*.ts',
@@ -257,7 +262,7 @@ describe('Multiple Pattern Support', () => {
     })
 
     it('should generate complete markdown document with multiple patterns', async () => {
-      const outputFile = 'integration-multiple.md'
+      const outputFile = path.join(__dirname, '..', 'tests', 'integration-multiple.md')
       await generateMarkdownDoc(
         testDir,
         ['src/*.ts', 'src/*.js'],
@@ -277,7 +282,7 @@ describe('Multiple Pattern Support', () => {
     })
 
     it('should handle exclusion patterns correctly', async () => {
-      const outputFile = 'integration-exclude.md'
+      const outputFile = path.join(__dirname, '..', 'tests', 'integration-exclude.md')
       await generateMarkdownDoc(
         testDir,
         '**/*',
@@ -296,7 +301,7 @@ describe('Multiple Pattern Support', () => {
   })
 
   describe('.prompt-fs-to-ai File Parsing', () => {
-    const testConfigDir = path.join(__dirname, '..', 'test-config-fixtures')
+    const testConfigDir = path.join(__dirname, '..', 'tests', 'test-config-fixtures')
 
     beforeEach(async () => {
       await fs.mkdir(testConfigDir, { recursive: true })
@@ -315,7 +320,7 @@ describe('Multiple Pattern Support', () => {
           continue
         }
         // Only delete files that are clearly test-generated
-        if (file.includes('.patch.') || file.includes('.diff.') || file.endsWith('.current') ||
+        if (file.includes('.') || file.includes('.') || file.endsWith('.current') ||
           (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
           await fs.rm(file, { force: true }).catch(() => { })
         }
@@ -550,7 +555,7 @@ docs/
 `
         await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
 
-        const outputFile = 'config-integration.md'
+        const outputFile = path.join(__dirname, '..', 'tests', 'config-integration.md')
         await generateMarkdownDoc(testConfigDir, undefined, [], outputFile)
 
         const content = await fs.readFile(outputFile, 'utf-8')
@@ -582,7 +587,7 @@ docs/
         await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
 
         // Don't specify CLI patterns (use default)
-        const outputFile = 'config-only.md'
+        const outputFile = path.join(__dirname, '..', 'tests', 'config-only.md'
         await generateMarkdownDoc(testConfigDir, undefined, [], outputFile)
 
         const content = await fs.readFile(outputFile, 'utf-8')
@@ -611,7 +616,7 @@ docs/
         await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
 
         // CLI specifies only src files
-        const outputFile = 'config-priority.md'
+        const outputFile = path.join(__dirname, '..', 'tests', 'config-priority.md'
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile)
 
         const content = await fs.readFile(outputFile, 'utf-8')
@@ -640,7 +645,7 @@ node_modules/
 `
         await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
 
-        const outputFile = 'config-command.md'
+        const outputFile = path.join(__dirname, '..', 'tests', 'config-command.md'
         await generateMarkdownDoc(testConfigDir, undefined, [], outputFile)
 
         const content = await fs.readFile(outputFile, 'utf-8')
@@ -667,7 +672,7 @@ temp/
         await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
 
         // Generate doc with config patterns
-        const outputFile = 'final-command.md'
+        const outputFile = path.join(__dirname, '..', 'tests', 'final-command.md'
         await generateMarkdownDoc(testConfigDir, undefined, ['logs/'], outputFile)
 
         // Delete config file
@@ -710,7 +715,7 @@ temp/
           // File doesn't exist, that's fine
         }
 
-        const outputFile = 'create-config.md'
+        const outputFile = path.join(__dirname, '..', 'tests', 'create-config.md'
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], ['node_modules/'], outputFile)
 
         // Check that config file was created in target directory
@@ -743,7 +748,7 @@ existing/
         await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
-        const outputFile = 'existing-config.md'
+        const outputFile = path.join(__dirname, '..', 'tests', 'existing-config.md'
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile)
 
         // Check that existing config was updated with new patterns
@@ -756,12 +761,12 @@ existing/
         await fs.rm(path.join(testConfigDir, '.prompt-fs-to-ai'), { force: true })
       })
 
-      it('should create patch file when --patch option is used and output file exists', async () => {
+      it('should create diff file when --patch option is used and output file exists', async () => {
         // Create test files
         await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
-        const outputFile = 'patch-test.md'
+        const outputFile = path.join(__dirname, '..', 'tests', 'patch-test.md'
 
         // Create initial file (this will create the .current file)
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
@@ -769,12 +774,12 @@ existing/
         // Add new file
         await fs.writeFile(path.join(testConfigDir, 'src', 'utils.js'), 'export const utils = "test"')
 
-        // Generate patch (this should create a timestamped patch file)
+        // Generate patch (this should create a timestamped diff file)
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
 
-        // Check that patch file with timestamp was created
+        // Check that diff file with timestamp was created
         const patchFiles = await fs.readdir('.')
-        const patchFile = patchFiles.find(file => file.startsWith(`${outputFile}.patch.`))
+        const patchFile = patchFiles.find(file => file.startsWith(`${outputFile}.`) && file.endsWith('.diff'))
         expect(patchFile).toBeDefined()
 
         // Check patch content contains diff information
@@ -801,7 +806,7 @@ existing/
         await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
-        const outputFile = 'new-patch-test.md'
+        const outputFile = path.join(__dirname, '..', 'tests', 'new-patch-test.md'
 
         // Generate with patch option but file doesn't exist yet
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
@@ -827,7 +832,7 @@ existing/
         await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
-        const outputFile = 'sequential-patch-test.md'
+        const outputFile = path.join(__dirname, '..', 'tests', 'sequential-patch-test.md'
 
         // First run - create initial state
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
@@ -840,8 +845,8 @@ existing/
         await fs.writeFile(path.join(testConfigDir, 'src', 'utils.js'), 'export const utils = "modified"')
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
 
-        // Check that multiple patch files were created
-        const patchFiles = (await fs.readdir('.')).filter(file => file.startsWith(`${outputFile}.patch.`))
+        // Check that multiple diff files were created
+        const patchFiles = (await fs.readdir('.')).filter(file => file.startsWith(`${outputFile}.`) && file.endsWith('.diff'))
         expect(patchFiles.length).toBe(3) // Initial patch + two incremental patches
 
         // Check that current state file contains latest changes
@@ -856,7 +861,7 @@ existing/
       })
     })
 
-    describe('Patch file reverse operations', () => {
+    describe('Diff file reverse operations', () => {
       beforeEach(async () => {
         // Clean up any existing generated files
         const allFiles = await fs.readdir('.').catch(() => [])
@@ -868,7 +873,7 @@ existing/
             continue
           }
           // Only delete test-generated files
-          if (file.includes('.patch.') || file.endsWith('.current') ||
+          if (file.includes('.') || file.endsWith('.current') ||
             (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
             await fs.rm(file, { force: true }).catch(() => { })
           }
@@ -888,18 +893,18 @@ existing/
             continue
           }
           // Only delete test-generated files
-          if (file.includes('.patch.') || file.endsWith('.current') ||
+          if (file.includes('.') || file.endsWith('.current') ||
             (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
             await fs.rm(file, { force: true }).catch(() => { })
           }
         }
       })
 
-      it('should apply single patch file and restore files', async () => {
+      it('should apply single diff file and restore files', async () => {
         // Create test files
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
-        const outputFile = 'patch-reverse-test.md'
+        const outputFile = path.join(__dirname, '..', 'tests', 'patch-reverse-test.md'
 
         // Create initial file with patch
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
@@ -908,8 +913,8 @@ existing/
         await fs.writeFile(path.join(testConfigDir, 'src', 'utils.js'), 'export const utils = "test"')
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
 
-        // Find the patch files
-        const patchFiles = (await fs.readdir('.')).filter(file => file.startsWith(`${outputFile}.patch.`))
+        // Find the diff files
+        const patchFiles = (await fs.readdir('.')).filter(file => file.startsWith(`${outputFile}.`) && file.endsWith('.diff'))
         expect(patchFiles.length).toBe(2)
 
         // Use the .current file which contains the complete latest state
@@ -938,7 +943,7 @@ existing/
         // Create test files
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
-        const outputFile = 'multi-patch-reverse-test.md'
+        const outputFile = path.join(__dirname, '..', 'tests', 'multi-patch-reverse-test.md'
 
         // Create initial file with patch
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
@@ -951,9 +956,9 @@ existing/
         await fs.writeFile(path.join(testConfigDir, 'src', 'utils.js'), 'export const utils = "v2"')
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
 
-        // Find all patch files
+        // Find all diff files
         const patchFiles = (await fs.readdir('.'))
-          .filter(file => file.startsWith(`${outputFile}.patch.`))
+          .filter(file => file.startsWith(`${outputFile}.`) && file.endsWith('.diff'))
           .sort()
 
         expect(patchFiles.length).toBe(3)
@@ -985,7 +990,7 @@ existing/
         // Create test files
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
-        const outputFile = 'resume-patch-test.md'
+        const outputFile = path.join(__dirname, '..', 'tests', 'resume-patch-test.md'
 
         // Create initial state and remove .current file to simulate resuming
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
@@ -998,7 +1003,7 @@ existing/
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
 
         // Check that patch was created
-        const patchFiles = (await fs.readdir('.')).filter(file => file.startsWith(`${outputFile}.patch.`))
+        const patchFiles = (await fs.readdir('.')).filter(file => file.startsWith(`${outputFile}.`) && file.endsWith('.diff'))
         expect(patchFiles.length).toBe(2) // Initial + one incremental
 
         // Check that .current file was recreated
@@ -1015,7 +1020,7 @@ existing/
   })
 
   describe('Diff Command', () => {
-    const testDiffDir = path.join(__dirname, '..', 'test-diff-fixtures')
+    const testDiffDir = path.join(__dirname, '..', 'tests', 'test-diff-fixtures')
 
     beforeEach(async () => {
       // Clean up any existing generated files
@@ -1028,7 +1033,7 @@ existing/
           continue
         }
         // Only delete test-generated files
-        if (file.includes('.patch.') || file.includes('.diff.') || file.endsWith('.current') ||
+        if (file.includes('.') || file.includes('.') || file.endsWith('.current') ||
           (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
           await fs.rm(file, { force: true }).catch(() => { })
         }
@@ -1050,7 +1055,7 @@ existing/
           continue
         }
         // Only delete files that are clearly test-generated
-        if (file.includes('.patch.') || file.includes('.diff.') || file.endsWith('.current') ||
+        if (file.includes('.') || file.includes('.') || file.endsWith('.current') ||
           (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
           await fs.rm(file, { force: true }).catch(() => { })
         }
@@ -1073,29 +1078,27 @@ existing/
       await generateMarkdownDoc(testDiffDir, ['src/**/*.ts', 'src/**/*.js'], [], file2)
 
       // Create diff between the two files
-      await createDiff(file1, file2, 'test-diff-output.diff')
+      const diffFilePath = path.join(__dirname, '..', 'tests', 'test-diff-output.diff')
+      await createDiff(file1, file2, diffFilePath)
 
       // Check that diff file was created
-      const diffFiles = (await fs.readdir('.')).filter(file => file === 'test-diff-output.diff')
-      expect(diffFiles.length).toBe(1)
-
-      const diffContent = await fs.readFile(diffFiles[0], 'utf-8')
-      expect(diffContent).toContain('Index: comparison')
+      const diffContent = await fs.readFile(diffFilePath, 'utf-8')
+      expect(diffContent).toContain('Index: file comparison')
       expect(diffContent).toContain('utils.js')
 
       // Clean up
       await fs.rm(file1, { force: true })
       await fs.rm(file2, { force: true })
-      await fs.rm('test-diff-output.diff', { force: true })
+      await fs.rm(diffFilePath, { force: true })
       await fs.rm(testDiffDir, { recursive: true, force: true })
     })
 
-    it('should create diff between patch file and markdown file', async () => {
+    it('should create diff between diff file and markdown file', async () => {
       // Create test files
       await fs.mkdir(path.join(testDiffDir, 'src'), { recursive: true })
       await fs.writeFile(path.join(testDiffDir, 'src', 'app.ts'), 'console.log("app")')
 
-      const markdownFile = 'patch-diff-test.md'
+      const markdownFile = path.join(__dirname, '..', 'tests', 'patch-diff-test.md'
 
       // Create markdown file
       await generateMarkdownDoc(testDiffDir, ['src/**/*.ts'], [], markdownFile)
@@ -1104,35 +1107,36 @@ existing/
       await fs.writeFile(path.join(testDiffDir, 'src', 'utils.js'), 'export const utils = "test"')
       await generateMarkdownDoc(testDiffDir, ['src/**/*.ts', 'src/**/*.js'], [], markdownFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: markdownFile, patch: true })
 
-      // Find the patch file
-      const patchFiles = (await fs.readdir('.')).filter(file => file.startsWith(`${markdownFile}.patch.`))
+      // Find the diff file
+      const markdownDir = path.dirname(markdownFile)
+      const markdownBaseName = path.basename(markdownFile)
+      const patchFiles = (await fs.readdir(markdownDir)).filter(file => file.startsWith(`${markdownBaseName}.`) && file.endsWith('.diff'))
       expect(patchFiles.length).toBe(1)
+      const patchFilePath = path.join(markdownDir, patchFiles[0])
 
-      // Create diff between markdown file and patch file
-      await createDiff(markdownFile, patchFiles[0], 'test-patch-diff.diff')
+      // Create diff between markdown file and diff file
+      const diffFilePath = path.join(__dirname, '..', 'tests', 'test-patch-diff.diff')
+      await createDiff(markdownFile, patchFilePath, diffFilePath)
 
       // Check that diff file was created
-      const diffFiles = (await fs.readdir('.')).filter(file => file === 'test-patch-diff.diff')
-      expect(diffFiles.length).toBe(1)
-
-      const diffContent = await fs.readFile(diffFiles[0], 'utf-8')
-      expect(diffContent).toContain('Index: comparison')
+      const diffContent = await fs.readFile(diffFilePath, 'utf-8')
+      expect(diffContent).toContain('Index: file comparison')
       expect(diffContent).toContain('utils.js')
 
       // Clean up
       await fs.rm(markdownFile, { force: true })
       await fs.rm(`${markdownFile}.current`, { force: true })
-      await fs.rm(patchFiles[0], { force: true })
-      await fs.rm('test-patch-diff.diff', { force: true })
+      await fs.rm(patchFilePath, { force: true })
+      await fs.rm(diffFilePath, { force: true })
       await fs.rm(testDiffDir, { recursive: true, force: true })
     })
 
-    it('should create diff between two patch files', async () => {
+    it('should create diff between two diff files', async () => {
       // Create test files
       await fs.mkdir(path.join(testDiffDir, 'src'), { recursive: true })
       await fs.writeFile(path.join(testDiffDir, 'src', 'app.ts'), 'console.log("app")')
 
-      const outputFile = 'patch-patch-diff-test.md'
+      const outputFile = path.join(__dirname, '..', 'tests', 'patch-patch-diff-test.md'
 
       // Create initial patch
       await generateMarkdownDoc(testDiffDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
@@ -1149,19 +1153,19 @@ existing/
       await fs.writeFile(path.join(testDiffDir, 'src', 'config.js'), 'export const config = {}')
       await generateMarkdownDoc(testDiffDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
 
-      // Find patch files
-      const patchFiles = (await fs.readdir('.')).filter(file => file.startsWith(`${outputFile}.patch.`)).sort()
+      // Find diff files
+      const patchFiles = (await fs.readdir('.')).filter(file => file.startsWith(`${outputFile}.`) && file.endsWith('.diff')).sort()
       expect(patchFiles.length).toBe(4) // Initial + three incremental patches
 
       // Create diff between second and third patch (v1 -> v2)
-      await createDiff(patchFiles[1], patchFiles[2], 'test-patch-patch-diff.diff')
+      await createDiff(patchFiles[1], patchFiles[2], path.join(__dirname, '..', 'tests', 'test-patch-patch-diff.diff')
 
       // Check that diff file was created
       const diffFiles = (await fs.readdir('.')).filter(file => file === 'test-patch-patch-diff.diff')
       expect(diffFiles.length).toBe(1)
 
       const diffContent = await fs.readFile(diffFiles[0], 'utf-8')
-      expect(diffContent).toContain('Index: comparison')
+      expect(diffContent).toContain('Index: file comparison')
       // Note: The diff should show the change from v1 to v2 in utils.js
 
       // Clean up
@@ -1188,14 +1192,14 @@ existing/
       await fs.writeFile(path.join(dir2, 'newfile.js'), 'console.log("new");')
 
       // Create diff between directories
-      await createDiff(dir1, dir2, 'test-dir-dir-diff.diff')
+      await createDiff(dir1, dir2, path.join(__dirname, '..', 'tests', 'test-dir-dir-diff.diff')
 
       // Check that diff file was created
       const diffFiles = (await fs.readdir('.')).filter(file => file === 'test-dir-dir-diff.diff')
       expect(diffFiles.length).toBe(1)
 
       const diffContent = await fs.readFile(diffFiles[0], 'utf-8')
-      expect(diffContent).toContain('Index: comparison')
+      expect(diffContent).toContain('Index: file comparison')
       expect(diffContent).toContain('console.log("v1")')
       expect(diffContent).toContain('console.log("v2")')
       expect(diffContent).toContain('newfile.js')
@@ -1212,18 +1216,18 @@ existing/
       await fs.writeFile(path.join(testDir, 'src', 'main.js'), 'console.log("main");')
 
       // Create markdown file
-      const mdFile = 'test-markdown.md'
+      const mdFile = path.join(__dirname, '..', 'tests', 'test-markdown.md'
       await generateMarkdownDoc(testDiffDir, ['src/main.js'], [], mdFile)
 
       // Create diff between directory and markdown
-      await createDiff(testDir, mdFile, 'test-dir-md-diff.diff')
+      await createDiff(testDir, mdFile, path.join(__dirname, '..', 'tests', 'test-dir-md-diff.diff')
 
       // Check that diff file was created
       const diffFiles = (await fs.readdir('.')).filter(file => file === 'test-dir-md-diff.diff')
       expect(diffFiles.length).toBe(1)
 
       const diffContent = await fs.readFile(diffFiles[0], 'utf-8')
-      expect(diffContent).toContain('Index: comparison')
+      expect(diffContent).toContain('Index: file comparison')
       expect(diffContent).toContain('main.js')
 
       // Clean up
@@ -1246,7 +1250,7 @@ existing/
   })
 
   describe('Reverse Operation', () => {
-    const testMarkdownDir = path.join(__dirname, '..', 'test-reverse-fixtures')
+    const testMarkdownDir = path.join(__dirname, '..', 'tests', 'test-reverse-fixtures')
 
     beforeEach(async () => {
       // Clean up any existing generated files
@@ -1259,7 +1263,7 @@ existing/
           continue
         }
         // Only delete test-generated files
-        if (file.includes('.patch.') || file.includes('.diff.') || file.endsWith('.current') ||
+        if (file.includes('.') || file.includes('.') || file.endsWith('.current') ||
           (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
           await fs.rm(file, { force: true }).catch(() => { })
         }
@@ -1281,7 +1285,7 @@ existing/
           continue
         }
         // Only delete files that are clearly test-generated
-        if (file.includes('.patch.') || file.includes('.diff.') || file.endsWith('.current') ||
+        if (file.includes('.') || file.includes('.') || file.endsWith('.current') ||
           (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
           await fs.rm(file, { force: true }).catch(() => { })
         }
