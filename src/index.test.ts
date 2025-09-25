@@ -156,6 +156,23 @@ describe('Multiple Pattern Support', () => {
       expect(content).not.toContain('-p "**/*"')
       await fs.rm(testOutput, { force: true })
     })
+
+    it('should not include -o when output is undefined', async () => {
+      const testOutput = 'test-undefined-output.md'
+      await generateMarkdownDoc(
+        testDir,
+        '**/*.ts',
+        [],
+        testOutput,
+        { pattern: '**/*.ts', exclude: [], output: undefined as any }
+      )
+
+      const content = await fs.readFile(testOutput, 'utf-8')
+      expect(content).toContain('prompt-fs-to-ai')
+      expect(content).toContain('-p "**/*.ts"')
+      expect(content).not.toContain('-o "undefined"')
+      await fs.rm(testOutput, { force: true })
+    })
   })
 
   describe('CLI Integration', () => {

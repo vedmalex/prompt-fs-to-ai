@@ -5,8 +5,6 @@ import * as fs from 'node:fs/promises'; //Используем promises верс
 import * as path from 'node:path'
 import pkg from '../package.json' assert { type: 'json' }
 
-const OUTPUT_FILE_NAME = 'output.md'
-
 const getDefaultOutputFileName = (dirPath: string) => {
   const dirName = basename(dirPath);
   return `${dirName}-output.md`;
@@ -104,8 +102,10 @@ export async function generateMarkdownDoc(
     if (options.exclude.length > 0) {
       commandString += ` -e ${options.exclude.map(e => `"${e}"`).join(' ')}`;
     }
-    if (options.output !== OUTPUT_FILE_NAME) {
+    if (options.output && options.output !== defaultOutputFile) {
       commandString += ` -o "${options.output}"`;
+    } else {
+      commandString += ` -o "${defaultOutputFile}"`;
     }
   }
 
