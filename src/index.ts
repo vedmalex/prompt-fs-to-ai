@@ -301,7 +301,7 @@ ${commandString}
     }
 
     if (previousContent) {
-      // Create patch between previous content and new content
+      // Create patch between previous content and new content (keep old format for compatibility)
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const patchFileName = `${finalOutputFile}.${timestamp}.diff`;
       const patchPath = path.resolve(process.cwd(), patchFileName);
@@ -761,7 +761,25 @@ ${content}
 async function generateMarkdownFromDirectory(dirPath: string): Promise<string> {
   // Generate markdown content without saving to file
   const resolvedDir = path.resolve(process.cwd(), dirPath);
-  const files = await processMultiplePatterns(['**/*'], resolvedDir, [], 'temp-output.md');
+
+  // Check for .prompt-fs-to-ai file and use its patterns
+  const configPatterns = await parsePromptFsToAiFile(resolvedDir, process.cwd());
+
+  // Use patterns from config file if available, otherwise use default
+  let includePatterns: string[];
+  let excludePatterns: string[];
+
+  if (configPatterns.include.length > 0) {
+    // Use patterns from .prompt-fs-to-ai file
+    includePatterns = configPatterns.include;
+    excludePatterns = configPatterns.exclude;
+  } else {
+    // Use default pattern if no config file
+    includePatterns = ['**/*'];
+    excludePatterns = [];
+  }
+
+  const files = await processMultiplePatterns(includePatterns, resolvedDir, excludePatterns, 'temp-output.md');
 
   if (files.length === 0) {
     throw new Error(`No files found in directory: ${dirPath}`);
@@ -776,7 +794,16 @@ async function generateMarkdownFromDirectory(dirPath: string): Promise<string> {
     })
   );
 
-  const commandString = `# Generated from directory: ${path.relative(process.cwd(), resolvedDir)}\n# Command: prompt-fs-to-ai ${path.relative(process.cwd(), resolvedDir)}\n\n`;
+  // Build command string with used patterns
+  let commandString = `# Generated from directory: ${path.relative(process.cwd(), resolvedDir)}\n# Command: prompt-fs-to-ai ${path.relative(process.cwd(), resolvedDir)}`;
+
+  if (configPatterns.include.length > 0) {
+    commandString += includePatterns.map(p => ` -p "${p}"`).join('');
+    if (excludePatterns.length > 0) {
+      commandString += ` -e ${excludePatterns.map(e => `"${e}"`).join(' ')}`;
+    }
+  }
+  commandString += '\n\n';
 
   return commandString + '## Структура файловой системы\n\n' + structure + '## Список файлов\n\n' + fileContents.join('\n\n');
 }
