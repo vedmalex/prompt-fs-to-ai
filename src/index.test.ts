@@ -165,7 +165,7 @@ describe('Multiple Pattern Support', () => {
         '**/*.ts',
         [],
         testOutput,
-        { pattern: '**/*.ts', exclude: [], output: testOutput }
+        { pattern: '**/*.ts', exclude: [], output: testOutput, patch: false }
       )
 
       const content = await fs.readFile(testOutput, 'utf-8')
@@ -181,7 +181,7 @@ describe('Multiple Pattern Support', () => {
         ['**/*.ts', '**/*.js'],
         [],
         testOutput,
-        { pattern: ['**/*.ts', '**/*.js'], exclude: [], output: testOutput }
+        { pattern: ['**/*.ts', '**/*.js'], exclude: [], output: testOutput, patch: false }
       )
 
       const content = await fs.readFile(testOutput, 'utf-8')
@@ -197,7 +197,7 @@ describe('Multiple Pattern Support', () => {
         '**/*',
         [],
         testOutput,
-        { pattern: '**/*', exclude: [], output: 'output.md' }
+        { pattern: '**/*', exclude: [], output: 'output.md', patch: false }
       )
 
       const content = await fs.readFile(testOutput, 'utf-8')
@@ -213,7 +213,7 @@ describe('Multiple Pattern Support', () => {
         '**/*.ts',
         [],
         testOutput,
-        { pattern: '**/*.ts', exclude: [], output: undefined as any }
+        { pattern: '**/*.ts', exclude: [], output: undefined as any, patch: false }
       )
 
       const content = await fs.readFile(testOutput, 'utf-8')
@@ -431,6 +431,13 @@ test/
       })
 
       it('should return empty arrays when file does not exist', async () => {
+        // Ensure no config files exist
+        const targetConfig = path.join(testConfigDir, '.prompt-fs-to-ai')
+        const cwdConfig = path.join(__dirname, '.prompt-fs-to-ai')
+
+        await fs.rm(targetConfig, { force: true }).catch(() => {})
+        await fs.rm(cwdConfig, { force: true }).catch(() => {})
+
         const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
 
         expect(result.include).toEqual([])
@@ -774,6 +781,30 @@ existing/
         expect(configContent).toContain('# Auto-generated .prompt-fs-to-ai file')
         expect(configContent).toContain('+src/**/*.ts')
         expect(configContent).not.toContain('existing/*.ts')
+
+        await fs.rm(outputFile, { force: true })
+        await fs.rm(path.join(testConfigDir, '.prompt-fs-to-ai'), { force: true })
+      })
+
+      it('should not create or update .prompt-fs-to-ai file when custom output file is specified', async () => {
+        // Create existing config file
+        const existingConfig = `+existing/*.ts
+-existing/
+`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), existingConfig)
+
+        // Create test files
+        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
+        await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
+
+        const outputFile = path.join(__dirname, '..', 'tests', 'custom-output.md')
+        await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: 'custom-output.md', patch: false })
+
+        // Check that existing config was NOT updated (should remain the same)
+        const configContent = await fs.readFile(path.join(testConfigDir, '.prompt-fs-to-ai'), 'utf-8')
+        expect(configContent).toBe(existingConfig)
+        expect(configContent).toContain('existing/*.ts')
+        expect(configContent).toContain('existing/')
 
         await fs.rm(outputFile, { force: true })
         await fs.rm(path.join(testConfigDir, '.prompt-fs-to-ai'), { force: true })

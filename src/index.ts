@@ -4,7 +4,8 @@ import { basename, sep, dirname } from 'path';
 import * as fs from 'node:fs/promises'; //Используем promises версию
 import * as path from 'node:path'
 import pkg from '../package.json' assert { type: 'json' }
-import { createPatch, applyPatch } from 'diff';
+// @ts-ignore
+import * as diff from 'diff';
 
 const getDefaultOutputFileName = (dirPath: string) => {
   const dirName = basename(dirPath);
@@ -58,7 +59,19 @@ export async function processMultiplePatterns(
 
     // Scan files with exclusions
     for await (const file of glob) {
-      allFiles.add(file);
+      const fullPath = path.join(rootDir, file);
+
+      // Verify that the path is actually a file (not a directory or symlink to directory)
+      try {
+        const stats = await fs.stat(fullPath);
+        if (stats.isFile()) {
+          allFiles.add(file);
+        }
+        // Skip directories and symlinks to directories
+      } catch (error) {
+        // If we can't stat the file, skip it
+        console.warn(`Skipping ${file}: ${error.message}`);
+      }
     }
   }
 
@@ -126,15 +139,18 @@ export async function generateMarkdownDoc(
   const finalExcludePatterns = [...new Set([...excludePatterns, ...configPatterns.exclude])];
 
   // Create or update .prompt-fs-to-ai file in the target directory with current patterns
-  try {
-    await createPromptFsToAiFile(rootDir, finalIncludePatterns, finalExcludePatterns);
-    if (!targetConfigExists) {
-      console.log(`Создан файл .prompt-fs-to-ai в директории: ${rootDir}`);
-    } else {
-      console.log(`Обновлен файл .prompt-fs-to-ai в директории: ${rootDir}`);
+  // Only if no custom output file is specified via CLI option
+  if (!options?.output) {
+    try {
+      await createPromptFsToAiFile(rootDir, finalIncludePatterns, finalExcludePatterns);
+      if (!targetConfigExists) {
+        console.log(`Создан файл .prompt-fs-to-ai в директории: ${rootDir}`);
+      } else {
+        console.log(`Обновлен файл .prompt-fs-to-ai в директории: ${rootDir}`);
+      }
+    } catch (error) {
+      console.warn(`Не удалось создать/обновить файл .prompt-fs-to-ai: ${error}`);
     }
-  } catch (error) {
-    console.warn(`Не удалось создать/обновить файл .prompt-fs-to-ai: ${error}`);
   }
 
   // Generate command string with all actually used patterns
@@ -306,7 +322,7 @@ ${commandString}
       const patchFileName = `${finalOutputFile}.${timestamp}.diff`;
       const patchPath = path.resolve(process.cwd(), patchFileName);
 
-      const patch = createPatch(
+      const patch = diff.createPatch(
         path.basename(finalOutputFile),
         previousContent,
         mdContent,
@@ -322,7 +338,7 @@ ${commandString}
       const patchFileName = `${finalOutputFile}.${timestamp}.diff`;
       const patchPath = path.resolve(process.cwd(), patchFileName);
 
-      const patch = createPatch(
+      const patch = diff.createPatch(
         path.basename(finalOutputFile),
         '',
         mdContent,
@@ -533,7 +549,7 @@ export async function createPromptFsToAiFile(rootDir: string, includePatterns: s
  * @returns Patched content
  */
 function applyUnifiedPatch(content: string, patchContent: string): string {
-  const result = applyPatch(content, patchContent);
+  const result = diff.applyPatch(content, patchContent);
   if (!result) {
     throw new Error('Failed to apply patch');
   }
@@ -601,7 +617,7 @@ async function findLatestPatchContent(outputFilePath: string): Promise<string> {
 
   // Apply all patches up to the latest one
   const latestPatch = patchFiles[patchFiles.length - 1];
-  return applyPatchesUpTo(latestPatch);
+  return await applyPatchesUpTo(latestPatch);
 }
 
 /**
@@ -961,10 +977,10 @@ async function createFileBasedDiff(
   if (tree1 !== tree2) {
     diffSections.push(`## Directory Structure Changes`);
     diffSections.push(``);
-    const treeDiff = createPatch('Directory Structure', tree1, tree2, `a/${label1}`, `b/${label2}`);
+    const treeDiff = diff.createPatch('Directory Structure', tree1, tree2, `a/${label1}`, `b/${label2}`);
     // Remove the header lines since we already have them
     const treeDiffLines = treeDiff.split('\n');
-    const contentStartIndex = treeDiffLines.findIndex(line => line.startsWith('@@'));
+    const contentStartIndex = treeDiffLines.findIndex((line: string) => line.startsWith('@@'));
     if (contentStartIndex !== -1) {
       diffSections.push(...treeDiffLines.slice(contentStartIndex));
     } else {
@@ -1027,10 +1043,10 @@ async function createFileBasedDiff(
 
     } else if (content1 !== content2) {
       // File modified
-      const fileDiff = createPatch(filePath, content1!, content2!, `a/${filePath}`, `b/${filePath}`);
+      const fileDiff = diff.createPatch(filePath, content1!, content2!, `a/${filePath}`, `b/${filePath}`);
       // Remove the header lines since we already have them
       const diffLines = fileDiff.split('\n');
-      const contentStartIndex = diffLines.findIndex(line => line.startsWith('@@'));
+      const contentStartIndex = diffLines.findIndex((line: string) => line.startsWith('@@'));
       if (contentStartIndex !== -1) {
         diffSections.push(`diff --git a/${filePath} b/${filePath}`);
         diffSections.push(`index ${'0'.repeat(7)}..${'0'.repeat(7)}`);
