@@ -7,6 +7,258 @@ import pkg from '../package.json' assert { type: 'json' }
 // @ts-ignore
 import * as diff from 'diff';
 
+const DEFAULT_BINARY_EXTENSIONS = new Set([
+  // Images
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'tiff', 'tif', 'svg',
+  // Documents (often binary/proprietary)
+  'pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'odt', 'odp', 'ods',
+  // Archives / compressed
+  'zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'zst',
+  // Audio / video
+  'mp3', 'mp4', 'mov', 'mkv', 'avi', 'wav', 'flac', 'ogg', 'webm',
+  // Fonts
+  'ttf', 'otf', 'woff', 'woff2',
+  // Binaries / artifacts
+  'exe', 'dll', 'so', 'dylib', 'o', 'a', 'class', 'jar', 'wasm', 'pyc',
+]);
+
+const DEFAULT_IGNORED_GLOB_PATTERNS = [
+  // Standard VCS / package dirs
+  '**/.git/**',
+  '**/node_modules/**',
+
+  // Common build artifacts
+  '**/dist/**',
+  '**/build/**',
+  '**/coverage/**',
+  '**/.next/**',
+  '**/.turbo/**',
+  '**/.cache/**',
+  '**/out/**',
+  '**/.vercel/**',
+
+  // Editor / OS noise
+  '**/.DS_Store',
+
+  // Tooling outputs
+  '**/*.diff',
+  '**/*.current',
+
+  // Tool config
+  '**/.prompt-fs-to-ai',
+
+  // Common sensitive config
+  '**/.env',
+  '**/.env.*',
+];
+
+function getLowercaseExtension(filePath: string): string {
+  const ext = path.extname(filePath);
+  if (!ext) {
+    return '';
+  }
+  return ext.slice(1).toLowerCase();
+}
+
+function isDefaultBinaryByExtension(filePath: string): boolean {
+  const ext = getLowercaseExtension(filePath);
+  return ext.length > 0 && DEFAULT_BINARY_EXTENSIONS.has(ext);
+}
+
+async function isLikelyBinaryFile(fullPath: string): Promise<boolean> {
+  // Heuristic approach:
+  // - If file contains NUL bytes -> binary
+  // - If too many control characters in the first chunk -> likely binary
+  const CHUNK_SIZE = 8000;
+
+  let handle: fs.FileHandle | undefined;
+  try {
+    handle = await fs.open(fullPath, 'r');
+    const buffer = Buffer.alloc(CHUNK_SIZE);
+    const { bytesRead } = await handle.read(buffer, 0, CHUNK_SIZE, 0);
+
+    if (bytesRead === 0) {
+      return false;
+    }
+
+    const slice = buffer.subarray(0, bytesRead);
+
+    // NUL byte check
+    for (let i = 0; i < slice.length; i++) {
+      if (slice[i] === 0) {
+        return true;
+      }
+    }
+
+    // Control character ratio check
+    let suspicious = 0;
+    for (let i = 0; i < slice.length; i++) {
+      const b = slice[i];
+      const isCommonWhitespace = b === 0x09 || b === 0x0a || b === 0x0d; // \t \n \r
+      const isPrintableAscii = b >= 0x20 && b <= 0x7e;
+      const isUtf8Byte = b >= 0x80; // treat as potentially text (UTF-8)
+
+      if (!(isCommonWhitespace || isPrintableAscii || isUtf8Byte)) {
+        suspicious++;
+      }
+    }
+
+    const ratio = suspicious / slice.length;
+    return ratio > 0.3;
+  } catch {
+    // If we can't read it, assume it's not safe to include as text.
+    return true;
+  } finally {
+    try {
+      await handle?.close();
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function normalizeExtension(ext: string): string {
+  return ext.trim().replace(/^\./, '').toLowerCase();
+}
+
+function computeRequiredIgnoredGroupsFromIncludes(includePatterns: string[]): Set<string> {
+  const required = new Set<string>();
+  const joined = includePatterns.join('\n').toLowerCase();
+
+  // If user explicitly mentions these dirs in include patterns, treat them as required
+  // and do not auto-ignore them.
+  if (joined.includes('node_modules')) {
+    required.add('node_modules');
+  }
+  if (joined.includes('.git')) {
+    required.add('.git');
+  }
+  if (joined.includes('/dist') || joined.includes('dist/')) {
+    required.add('dist');
+  }
+  if (joined.includes('/build') || joined.includes('build/')) {
+    required.add('build');
+  }
+  if (joined.includes('coverage')) {
+    required.add('coverage');
+  }
+  if (joined.includes('.next')) {
+    required.add('.next');
+  }
+  if (joined.includes('.turbo')) {
+    required.add('.turbo');
+  }
+  if (joined.includes('.cache')) {
+    required.add('.cache');
+  }
+  if (joined.includes('/out') || joined.includes('out/')) {
+    required.add('out');
+  }
+  if (joined.includes('.vercel')) {
+    required.add('.vercel');
+  }
+
+  if (joined.includes('.env')) {
+    required.add('.env');
+  }
+  if (joined.includes('.prompt-fs-to-ai')) {
+    required.add('.prompt-fs-to-ai');
+  }
+
+  return required;
+}
+
+function filterDefaultIgnoredPatternsForIncludes(includePatterns: string[]): string[] {
+  const required = computeRequiredIgnoredGroupsFromIncludes(includePatterns);
+
+  return DEFAULT_IGNORED_GLOB_PATTERNS.filter((p) => {
+    const lower = p.toLowerCase();
+
+    if (required.has('node_modules') && lower.includes('node_modules')) {
+      return false;
+    }
+    if (required.has('.git') && lower.includes('.git')) {
+      return false;
+    }
+    if (required.has('dist') && lower.includes('/dist/')) {
+      return false;
+    }
+    if (required.has('build') && lower.includes('/build/')) {
+      return false;
+    }
+    if (required.has('coverage') && lower.includes('coverage')) {
+      return false;
+    }
+    if (required.has('.next') && lower.includes('.next')) {
+      return false;
+    }
+    if (required.has('.turbo') && lower.includes('.turbo')) {
+      return false;
+    }
+    if (required.has('.cache') && lower.includes('.cache')) {
+      return false;
+    }
+    if (required.has('out') && lower.includes('/out/')) {
+      return false;
+    }
+    if (required.has('.vercel') && lower.includes('.vercel')) {
+      return false;
+    }
+    if (required.has('.env') && lower.includes('.env')) {
+      return false;
+    }
+    if (required.has('.prompt-fs-to-ai') && lower.includes('.prompt-fs-to-ai')) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+function filterAutoExcludedPathsForIncludes(includePatterns: string[], autoExcludedPaths: string[]): string[] {
+  const required = computeRequiredIgnoredGroupsFromIncludes(includePatterns);
+  return autoExcludedPaths.filter((p) => {
+    const lower = p.toLowerCase();
+    if (required.has('node_modules') && lower.includes('node_modules')) {
+      return false;
+    }
+    if (required.has('.git') && lower.includes('.git')) {
+      return false;
+    }
+    if (required.has('dist') && lower.includes('/dist/')) {
+      return false;
+    }
+    if (required.has('build') && lower.includes('/build/')) {
+      return false;
+    }
+    if (required.has('coverage') && lower.includes('coverage')) {
+      return false;
+    }
+    if (required.has('.next') && lower.includes('.next')) {
+      return false;
+    }
+    if (required.has('.turbo') && lower.includes('.turbo')) {
+      return false;
+    }
+    if (required.has('.cache') && lower.includes('.cache')) {
+      return false;
+    }
+    if (required.has('out') && lower.includes('/out/')) {
+      return false;
+    }
+    if (required.has('.vercel') && lower.includes('.vercel')) {
+      return false;
+    }
+    if (required.has('.env') && lower.includes('.env')) {
+      return false;
+    }
+    if (required.has('.prompt-fs-to-ai') && lower.includes('.prompt-fs-to-ai')) {
+      return false;
+    }
+    return true;
+  });
+}
+
 const getDefaultOutputFileName = (dirPath: string) => {
   const dirName = basename(dirPath);
   return `${dirName}-output.md`;
@@ -36,9 +288,20 @@ export async function processMultiplePatterns(
   patterns: string[],
   rootDir: string,
   excludePatterns: string[],
-  finalOutputFile: string
+  finalOutputFile: string,
+  options?: {
+    includeBinary?: boolean;
+    discoveredBinaryExtensions?: Set<string>;
+    additionalIgnorePatterns?: string[];
+    defaultIgnorePatterns?: string[];
+  }
 ): Promise<string[]> {
   const allFiles = new Set<string>();
+  const includeBinary = options?.includeBinary === true;
+  const discoveredBinaryExtensions = options?.discoveredBinaryExtensions;
+  const additionalIgnorePatterns = options?.additionalIgnorePatterns || [];
+  const defaultIgnorePatterns = options?.defaultIgnorePatterns ?? DEFAULT_IGNORED_GLOB_PATTERNS;
+  const outputBaseName = path.basename(finalOutputFile);
 
   for (const pattern of patterns) {
     const glob = new Glob(
@@ -50,8 +313,14 @@ export async function processMultiplePatterns(
         nodir: true, // Search only files for better performance
         ignore: [
           finalOutputFile,
+          outputBaseName,
+          `**/${outputBaseName}`,
+          `**/${outputBaseName}.current`,
+          `**/${outputBaseName}.*.diff`,
           '*output.md', // Exclude all files ending with output.md
           '**/*output.md', // Exclude in all subdirectories
+          ...defaultIgnorePatterns,
+          ...additionalIgnorePatterns,
           ...excludePatterns
         ]
       }
@@ -65,6 +334,25 @@ export async function processMultiplePatterns(
       try {
         const stats = await fs.stat(fullPath);
         if (stats.isFile()) {
+          if (!includeBinary) {
+            // Fast path: exclude known binary/proprietary file types by extension
+            if (isDefaultBinaryByExtension(file)) {
+              const ext = normalizeExtension(getLowercaseExtension(file));
+              if (ext && discoveredBinaryExtensions) {
+                discoveredBinaryExtensions.add(ext);
+              }
+              continue;
+            }
+            // Slow path: detect binaries even without extension
+            const binary = await isLikelyBinaryFile(fullPath);
+            if (binary) {
+              const ext = normalizeExtension(getLowercaseExtension(file));
+              if (ext && discoveredBinaryExtensions) {
+                discoveredBinaryExtensions.add(ext);
+              }
+              continue;
+            }
+          }
           allFiles.add(file);
         }
         // Skip directories and symlinks to directories
@@ -91,6 +379,7 @@ interface Options {  // Interface for command line options
   exclude: string[];
   output: string;
   patch: boolean;  // Create diff instead of replacing existing file
+  includeBinary?: boolean; // Include binary files (not recommended)
 }
 
 export async function generateMarkdownDoc(
@@ -102,11 +391,19 @@ export async function generateMarkdownDoc(
 ) {
   const isPatchMode = options?.patch || false;
   const defaultOutputFile = getDefaultOutputFileName(rootDir);
-  const finalOutputFile = outputFile || defaultOutputFile;
+  const cliOutputProvided = typeof outputFile === 'string' && outputFile.trim().length > 0;
 
   // Read .prompt-fs-to-ai file for additional patterns
   // First check target directory, then current working directory
   const configPatterns = await parsePromptFsToAiFile(rootDir, process.cwd());
+  const configOutputFile = configPatterns.outputFile && configPatterns.outputFile.trim().length > 0
+    ? configPatterns.outputFile.trim()
+    : undefined;
+  const finalOutputFile = (cliOutputProvided ? outputFile : (configOutputFile || defaultOutputFile)) as string;
+  const finalOutputType = (configPatterns.outputType && configPatterns.outputType.trim().length > 0)
+    ? configPatterns.outputType.trim()
+    : (getLowercaseExtension(finalOutputFile) || 'md');
+  const includeBinary = options?.includeBinary === true || configPatterns.includeBinary === true;
 
   // Check if config file exists specifically in the target directory
   const targetConfigFile = path.join(rootDir, '.prompt-fs-to-ai');
@@ -136,22 +433,18 @@ export async function generateMarkdownDoc(
   }
 
   // Combine exclude patterns from CLI and config file (with deduplication)
-  const finalExcludePatterns = [...new Set([...excludePatterns, ...configPatterns.exclude])];
+  const baseExcludePatterns = [...new Set([...excludePatterns, ...configPatterns.exclude])];
 
-  // Create or update .prompt-fs-to-ai file in the target directory with current patterns
-  // Only if no custom output file is specified via CLI option
-  if (!options?.output) {
-    try {
-      await createPromptFsToAiFile(rootDir, finalIncludePatterns, finalExcludePatterns);
-      if (!targetConfigExists) {
-        console.log(`Создан файл .prompt-fs-to-ai в директории: ${rootDir}`);
-      } else {
-        console.log(`Обновлен файл .prompt-fs-to-ai в директории: ${rootDir}`);
-      }
-    } catch (error) {
-      console.warn(`Не удалось создать/обновить файл .prompt-fs-to-ai: ${error}`);
-    }
-  }
+  const configuredAutoExcludedExts = (configPatterns.autoExcludedExtensions || []).map(normalizeExtension).filter(Boolean);
+  const autoExcludePatterns = includeBinary
+    ? []
+    : configuredAutoExcludedExts.map(ext => `**/*.${ext}`);
+
+  const configuredAutoExcludedPaths = (configPatterns.autoExcludedPaths || []).map(p => p.trim()).filter(Boolean);
+  const effectiveDefaultIgnoredPaths = filterDefaultIgnoredPatternsForIncludes(finalIncludePatterns);
+  const effectiveAutoExcludedPaths = filterAutoExcludedPathsForIncludes(finalIncludePatterns, configuredAutoExcludedPaths);
+
+  const finalExcludePatterns = [...new Set([...baseExcludePatterns, ...autoExcludePatterns])];
 
   // Generate command string with all actually used patterns
   let commandString = `prompt-fs-to-ai ${path.relative(process.cwd(), rootDir).trim() || './'}`;
@@ -168,19 +461,47 @@ export async function generateMarkdownDoc(
   }
 
   // Add output option
-  if (options?.output && options.output !== defaultOutputFile) {
-    commandString += ` -o "${options.output}"`;
-  } else {
-    commandString += ` -o "${defaultOutputFile}"`;
-  }
+  commandString += ` -o "${finalOutputFile}"`;
 
   // Process patterns (single or multiple) to get file list
+  const discoveredBinaryExtensions = new Set<string>();
   const files = await processMultiplePatterns(
     finalIncludePatterns,
     rootDir,
     finalExcludePatterns,
-    finalOutputFile
+    finalOutputFile,
+    {
+      includeBinary,
+      discoveredBinaryExtensions,
+      defaultIgnorePatterns: effectiveDefaultIgnoredPaths,
+      additionalIgnorePatterns: effectiveAutoExcludedPaths
+    }
   );
+
+  // Persist config (including newly discovered binary extensions) AFTER scanning.
+  // This prevents re-scanning the same binary extensions in future runs.
+  const mergedAutoExcluded = includeBinary
+    ? configuredAutoExcludedExts
+    : [...new Set([...configuredAutoExcludedExts, ...Array.from(discoveredBinaryExtensions)])].sort();
+
+  const mergedAutoExcludedPaths = [...new Set([...DEFAULT_IGNORED_GLOB_PATTERNS, ...configuredAutoExcludedPaths])].sort();
+
+  try {
+    await createPromptFsToAiFile(rootDir, finalIncludePatterns, baseExcludePatterns, {
+      outputFile: finalOutputFile,
+      outputType: finalOutputType,
+      includeBinary,
+      autoExcludedExtensions: mergedAutoExcluded,
+      autoExcludedPaths: mergedAutoExcludedPaths,
+    });
+    if (!targetConfigExists) {
+      console.log(`Создан файл .prompt-fs-to-ai в директории: ${rootDir}`);
+    } else {
+      console.log(`Обновлен файл .prompt-fs-to-ai в директории: ${rootDir}`);
+    }
+  } catch (error) {
+    console.warn(`Не удалось создать/обновить файл .prompt-fs-to-ai: ${error}`);
+  }
 
   // Строим древовидную структуру
   const rootNode: TreeNode = {
@@ -253,6 +574,13 @@ export async function generateMarkdownDoc(
 
       if (!child.isDir && child.filePath) {
         const fullPath = path.join(rootDir, child.filePath);
+        // If binary slips through, skip safely instead of crashing.
+        if (!includeBinary) {
+          const binary = isDefaultBinaryByExtension(child.filePath) || await isLikelyBinaryFile(fullPath);
+          if (binary) {
+            continue;
+          }
+        }
         const content = await fs.readFile(fullPath, 'utf-8');
         const extension = child.filePath.split('.').pop() || '';
 
@@ -444,7 +772,19 @@ export function parseMarkdownForFiles(markdownContent: string): Array<{ path: st
  * @param cwdDir - Current working directory to search for .prompt-fs-to-ai file (fallback)
  * @returns Object with include and exclude patterns and the file path that was used
  */
-export async function parsePromptFsToAiFile(rootDir: string, cwdDir?: string): Promise<{ include: string[], exclude: string[], configFilePath?: string }> {
+export async function parsePromptFsToAiFile(
+  rootDir: string,
+  cwdDir?: string
+): Promise<{
+  include: string[],
+  exclude: string[],
+  outputFile?: string,
+  outputType?: string,
+  includeBinary?: boolean,
+  autoExcludedExtensions?: string[],
+  autoExcludedPaths?: string[],
+  configFilePath?: string
+}> {
   // First, try to find .prompt-fs-to-ai in the target directory (rootDir)
   let configFile = path.join(rootDir, '.prompt-fs-to-ai');
   let foundInTargetDir = false;
@@ -475,12 +815,42 @@ export async function parsePromptFsToAiFile(rootDir: string, cwdDir?: string): P
 
     const include: string[] = [];
     const exclude: string[] = [];
+    let outputFile: string | undefined;
+    let outputType: string | undefined;
+    let includeBinary: boolean | undefined;
+    const autoExcludedExtensions: string[] = [];
+    const autoExcludedPaths: string[] = [];
 
     for (const line of lines) {
       const trimmed = line.trim();
 
       // Skip empty lines and comments
       if (!trimmed || trimmed.startsWith('#')) {
+        continue;
+      }
+
+      // Handle directives (metadata)
+      if (trimmed.startsWith('@')) {
+        const directiveMatch = trimmed.match(/^@(\S+)\s+(.+)$/);
+        if (directiveMatch) {
+          const key = directiveMatch[1].toLowerCase();
+          const value = directiveMatch[2].trim();
+
+          if (key === 'output' || key === 'outputfile' || key === 'output-file') {
+            outputFile = value;
+          } else if (key === 'outputtype' || key === 'output-type') {
+            outputType = value;
+          } else if (key === 'includebinary' || key === 'include-binary') {
+            includeBinary = value.toLowerCase() === 'true' || value === '1' || value.toLowerCase() === 'yes';
+          } else if (key === 'autoexcludeext' || key === 'auto-exclude-ext' || key === 'autoexcludeexts' || key === 'auto-exclude-exts') {
+            const parts = value.split(/[,\s]+/).map(normalizeExtension).filter(Boolean);
+            autoExcludedExtensions.push(...parts);
+          } else if (key === 'autoexcludepath' || key === 'auto-exclude-path' || key === 'autoexcludepattern' || key === 'auto-exclude-pattern') {
+            if (value) {
+              autoExcludedPaths.push(value);
+            }
+          }
+        }
         continue;
       }
 
@@ -500,10 +870,28 @@ export async function parsePromptFsToAiFile(rootDir: string, cwdDir?: string): P
       }
     }
 
-    return { include, exclude, configFilePath: configFile };
+    return {
+      include,
+      exclude,
+      configFilePath: configFile,
+      outputFile,
+      outputType,
+      includeBinary,
+      autoExcludedExtensions: [...new Set(autoExcludedExtensions)].sort(),
+      autoExcludedPaths: [...new Set(autoExcludedPaths)].sort(),
+    };
   } catch (error) {
     // File can't be read, return empty patterns
-    return { include: [], exclude: [], configFilePath: undefined };
+    return {
+      include: [],
+      exclude: [],
+      configFilePath: undefined,
+      outputFile: undefined,
+      outputType: undefined,
+      includeBinary: undefined,
+      autoExcludedExtensions: undefined,
+      autoExcludedPaths: undefined
+    };
   }
 }
 
@@ -513,7 +901,18 @@ export async function parsePromptFsToAiFile(rootDir: string, cwdDir?: string): P
  * @param includePatterns - Include patterns to save
  * @param excludePatterns - Exclude patterns to save
  */
-export async function createPromptFsToAiFile(rootDir: string, includePatterns: string[], excludePatterns: string[]): Promise<void> {
+export async function createPromptFsToAiFile(
+  rootDir: string,
+  includePatterns: string[],
+  excludePatterns: string[],
+  settings?: {
+    outputFile?: string;
+    outputType?: string;
+    includeBinary?: boolean;
+    autoExcludedExtensions?: string[];
+    autoExcludedPaths?: string[];
+  }
+): Promise<void> {
   const configFile = path.join(rootDir, '.prompt-fs-to-ai');
   let content = '# Auto-generated .prompt-fs-to-ai file\n';
   content += '# This file contains patterns used for the current project\n\n';
@@ -527,6 +926,40 @@ export async function createPromptFsToAiFile(rootDir: string, includePatterns: s
     content += '# Include patterns\n';
     for (const pattern of uniqueIncludePatterns) {
       content += `+${pattern}\n`;
+    }
+    content += '\n';
+  }
+
+  // Add output settings (persisted defaults)
+  if (settings?.outputFile || settings?.outputType || settings?.includeBinary) {
+    content += '# Output settings\n';
+    if (settings?.outputFile) {
+      content += `@outputFile ${settings.outputFile}\n`;
+    }
+    if (settings?.outputType) {
+      content += `@outputType ${settings.outputType}\n`;
+    }
+    if (settings?.includeBinary) {
+      content += `@includeBinary true\n`;
+    }
+    content += '\n';
+  }
+
+  // Add auto-excluded binary extensions (to avoid re-scanning them)
+  const uniqueAutoExcludedExtensions = [...new Set((settings?.autoExcludedExtensions || []).map(normalizeExtension).filter(Boolean))].sort();
+  if (uniqueAutoExcludedExtensions.length > 0) {
+    content += '# Auto-excluded binary extensions\n';
+    for (const ext of uniqueAutoExcludedExtensions) {
+      content += `@autoExcludeExt ${ext}\n`;
+    }
+    content += '\n';
+  }
+
+  const uniqueAutoExcludedPaths = [...new Set((settings?.autoExcludedPaths || []).map(p => p.trim()).filter(Boolean))].sort();
+  if (uniqueAutoExcludedPaths.length > 0) {
+    content += '# Auto-excluded paths\n';
+    for (const p of uniqueAutoExcludedPaths) {
+      content += `@autoExcludePath ${p}\n`;
     }
     content += '\n';
   }
@@ -795,7 +1228,26 @@ async function generateMarkdownFromDirectory(dirPath: string): Promise<string> {
     excludePatterns = [];
   }
 
-  const files = await processMultiplePatterns(includePatterns, resolvedDir, excludePatterns, 'temp-output.md');
+  const configuredAutoExcludedExts = (configPatterns.autoExcludedExtensions || []).map(normalizeExtension).filter(Boolean);
+  const autoExcludePatterns = (configPatterns.includeBinary === true)
+    ? []
+    : configuredAutoExcludedExts.map(ext => `**/*.${ext}`);
+
+  const configuredAutoExcludedPaths = (configPatterns.autoExcludedPaths || []).map(p => p.trim()).filter(Boolean);
+
+  const finalExclude = [...new Set([...excludePatterns, ...autoExcludePatterns])];
+
+  const files = await processMultiplePatterns(
+    includePatterns,
+    resolvedDir,
+    finalExclude,
+    'temp-output.md',
+    {
+      includeBinary: configPatterns.includeBinary === true,
+      defaultIgnorePatterns: filterDefaultIgnoredPatternsForIncludes(includePatterns),
+      additionalIgnorePatterns: filterAutoExcludedPathsForIncludes(includePatterns, configuredAutoExcludedPaths),
+    }
+  );
 
   if (files.length === 0) {
     throw new Error(`No files found in directory: ${dirPath}`);
@@ -805,6 +1257,12 @@ async function generateMarkdownFromDirectory(dirPath: string): Promise<string> {
   const fileContents = await Promise.all(
     files.map(async (file) => {
       const fullPath = path.join(resolvedDir, file);
+      if (configPatterns.includeBinary !== true) {
+        const binary = isDefaultBinaryByExtension(file) || await isLikelyBinaryFile(fullPath);
+        if (binary) {
+          return '';
+        }
+      }
       const content = await fs.readFile(fullPath, 'utf-8');
       return formatFileContent(file, content);
     })
@@ -821,7 +1279,8 @@ async function generateMarkdownFromDirectory(dirPath: string): Promise<string> {
   }
   commandString += '\n\n';
 
-  return commandString + '## Структура файловой системы\n\n' + structure + '## Список файлов\n\n' + fileContents.join('\n\n');
+  const nonEmptyFileContents = fileContents.filter(Boolean);
+  return commandString + '## Структура файловой системы\n\n' + structure + '## Список файлов\n\n' + nonEmptyFileContents.join('\n\n');
 }
 
 /**
@@ -1208,6 +1667,7 @@ export function runCLI() {
     .option('-p, --pattern <patterns...>', 'Glob patterns for files to include (space-separated)', [])
     .option('-e, --exclude <patterns...>', 'Glob patterns for files/directories to exclude', [])
     .option('-o, --output <filename>', `Output file name (default: based on directory name)`)
+    .option('--include-binary', 'Include binary/proprietary files (not recommended)', false)
     .option('--patch', 'Create diff file instead of replacing existing output file')
     .action(async (directory, options) => {
       try {

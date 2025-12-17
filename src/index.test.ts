@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
+import * as os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { normalizePatterns, isPatternArray, processMultiplePatterns, generateMarkdownDoc, parseMarkdownForFiles, reverseMarkdownToFiles, parsePromptFsToAiFile, createPromptFsToAiFile, createDiff } from './index.js'
 
@@ -8,36 +9,31 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 describe('Multiple Pattern Support', () => {
-  const testDir = path.join(__dirname, '..', 'tests', 'test-fixtures')
+  let originalCwd = ''
+  let sandboxCwd = ''
+  let testDir = ''
+  let testConfigDir = ''
+  let sandboxFallbackCwdDir = ''
+
+  async function createSandboxDir(): Promise<string> {
+    // Use OS temp directory to avoid touching project workspace.
+    return await fs.mkdtemp(path.join(os.tmpdir(), 'prompt-fs-to-ai-vitest-'))
+  }
 
   beforeAll(async () => {
-    // Create tests directory
-    await fs.mkdir(path.join(__dirname, '..', 'tests'), { recursive: true })
+    // Intentionally empty: tests must not create or clean any directories in the repository root.
   })
 
   beforeEach(async () => {
-    // Clean up any leftover test files from previous runs
-    const allFiles = await fs.readdir('.').catch(() => [])
+    originalCwd = process.cwd()
+    sandboxCwd = await createSandboxDir()
+    process.chdir(sandboxCwd)
 
-    for (const file of allFiles) {
-      // Never delete important project files and directories
-      if (file === 'README.md' || file === 'package.json' || file === 'bun.lock' ||
-        file === 'biome.json' || file === 'tsconfig.json' || file === 'vitest.config.ts' ||
-        file === '.git' || file === '.gitignore' || file.startsWith('.git') ||
-        file === 'node_modules' || file === 'dist' || file === 'src' ||
-        file === 'bin' || file === 'types' || file === 'memory-bank' ||
-        file === '.specstory' || file === '.vscode' || file === 'tests') {
-        continue
-      }
-
-      // Only delete test-generated files with specific patterns
-      if (file.startsWith('test-') || file.startsWith('integration-') ||
-        file.startsWith('config-') || file.endsWith('.diff') ||
-        file.endsWith('.current') || file.match(/.*\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.diff$/) ||
-        (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
-        await fs.rm(file, { recursive: true, force: true }).catch(() => { })
-      }
-    }
+    // Keep all outputs and configs inside sandbox only.
+    testDir = path.join(sandboxCwd, 'test-fixtures')
+    testConfigDir = path.join(sandboxCwd, 'test-config-fixtures')
+    sandboxFallbackCwdDir = path.join(sandboxCwd, 'cwd-fallback')
+    await fs.mkdir(sandboxFallbackCwdDir, { recursive: true })
 
     // Create test directory structure
     await fs.mkdir(testDir, { recursive: true })
@@ -49,30 +45,35 @@ describe('Multiple Pattern Support', () => {
     await fs.writeFile(path.join(testDir, 'src', 'utils.js'), 'export const utils = "multiple patterns";')
     await fs.writeFile(path.join(testDir, 'docs', 'readme.md'), '# Test')
     await fs.writeFile(path.join(testDir, 'package.json'), '{"name": "test"}')
+
+    // Standard folders that should be ignored by default
+    await fs.mkdir(path.join(testDir, 'node_modules', 'pkg'), { recursive: true })
+    await fs.writeFile(path.join(testDir, 'node_modules', 'pkg', 'index.js'), 'module.exports = "ignored";')
+    await fs.mkdir(path.join(testDir, '.git'), { recursive: true })
+    await fs.writeFile(path.join(testDir, '.git', 'config'), '[core]\n\trepositoryformatversion = 0')
+    await fs.mkdir(path.join(testDir, 'dist'), { recursive: true })
+    await fs.writeFile(path.join(testDir, 'dist', 'bundle.js'), 'console.log("ignored");')
+
+    // Common config files that should be ignored by default
+    await fs.writeFile(path.join(testDir, '.env'), 'SECRET=do-not-include')
+    await fs.writeFile(path.join(testDir, '.prompt-fs-to-ai'), '+**/*\n')
+
+    // Tool output file (should be ignored when it's the output target)
+    await fs.writeFile(path.join(testDir, 'output.md'), '# generated output\n')
+
+    // Create a binary-like file that should be excluded by default
+    await fs.writeFile(path.join(testDir, 'image.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02, 0x03]))
+    // Create a binary-like file with an unknown extension (to be auto-excluded and persisted)
+    await fs.writeFile(path.join(testDir, 'blob.unknownbin'), Buffer.from([0x00, 0x01, 0x02, 0x03, 0x00, 0xff]))
   })
 
   afterEach(async () => {
-    // Clean up test directory
-    await fs.rm(testDir, { recursive: true, force: true }).catch(() => { })
-
-    // Clean up any generated test files
-    const allFiles = await fs.readdir('.').catch(() => [])
-    for (const file of allFiles) {
-      // Never delete important project files and directories
-      if (file === 'README.md' || file === 'package.json' || file === 'bun.lock' ||
-        file === 'biome.json' || file === 'tsconfig.json' || file === 'vitest.config.ts' ||
-        file === '.git' || file === '.gitignore' || file.startsWith('.git') ||
-        file === 'node_modules' || file === 'dist' || file === 'src' ||
-        file === 'bin' || file === 'types' || file === 'memory-bank' ||
-        file === '.specstory' || file === '.vscode' || file === 'tests') {
-        continue
-      }
-      // Only delete test-generated files with specific patterns
-      if (file.startsWith('test-') || file.startsWith('integration-') ||
-        file.startsWith('config-') || file.endsWith('.diff') ||
-        file.endsWith('.current') || file.match(/.*\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.diff$/) ||
-        (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
-        await fs.rm(file, { recursive: true, force: true }).catch(() => { })
+    // Always restore original CWD and remove only the sandbox.
+    try {
+      process.chdir(originalCwd)
+    } finally {
+      if (sandboxCwd) {
+        await fs.rm(sandboxCwd, { recursive: true, force: true }).catch(() => { })
       }
     }
   })
@@ -154,6 +155,60 @@ describe('Multiple Pattern Support', () => {
       )
       expect(files).toContain('src/index.ts')
       expect(files).not.toContain('src/utils.js')
+    })
+
+    it('should ignore standard folders and config/output files by default', async () => {
+      const files = await processMultiplePatterns(
+        ['**/*'],
+        testDir,
+        [],
+        'output.md'
+      )
+      expect(files).toContain('src/index.ts')
+      expect(files).not.toContain('node_modules/pkg/index.js')
+      expect(files).not.toContain('.git/config')
+      expect(files).not.toContain('dist/bundle.js')
+      expect(files).not.toContain('.env')
+      expect(files).not.toContain('.prompt-fs-to-ai')
+      expect(files).not.toContain('output.md')
+    })
+
+    it('should allow explicit include to override default ignored folders (node_modules)', async () => {
+      const outputFile = path.join(sandboxCwd, 'override-node-modules.md')
+      await generateMarkdownDoc(
+        testDir,
+        ['node_modules/**'],
+        [],
+        outputFile
+      )
+
+      const content = await fs.readFile(outputFile, 'utf-8')
+      expect(content).toContain('node_modules/pkg/index.js')
+      expect(content).toContain('module.exports = "ignored";')
+    })
+
+    it('should exclude binary/proprietary files by default', async () => {
+      const files = await processMultiplePatterns(
+        ['**/*'],
+        testDir,
+        [],
+        'output.md'
+      )
+      expect(files).toContain('src/index.ts')
+      expect(files).not.toContain('image.png')
+      expect(files).not.toContain('blob.unknownbin')
+    })
+
+    it('should include binary files when includeBinary option is enabled', async () => {
+      const files = await processMultiplePatterns(
+        ['**/*'],
+        testDir,
+        [],
+        'output.md',
+        { includeBinary: true }
+      )
+      expect(files).toContain('image.png')
+      expect(files).toContain('blob.unknownbin')
     })
   })
 
@@ -252,7 +307,7 @@ describe('Multiple Pattern Support', () => {
 
   describe('Full Integration Tests', () => {
     it('should generate complete markdown document with single pattern', async () => {
-      const outputFile = path.join(__dirname, '..', 'tests', 'integration-single.md')
+      const outputFile = path.join(sandboxCwd, 'integration-single.md')
       await generateMarkdownDoc(
         testDir,
         '**/*.ts',
@@ -274,7 +329,7 @@ describe('Multiple Pattern Support', () => {
     })
 
     it('should generate complete markdown document with multiple patterns', async () => {
-      const outputFile = path.join(__dirname, '..', 'tests', 'integration-multiple.md')
+      const outputFile = path.join(sandboxCwd, 'integration-multiple.md')
       await generateMarkdownDoc(
         testDir,
         ['src/*.ts', 'src/*.js'],
@@ -294,7 +349,7 @@ describe('Multiple Pattern Support', () => {
     })
 
     it('should handle exclusion patterns correctly', async () => {
-      const outputFile = path.join(__dirname, '..', 'tests', 'integration-exclude.md')
+      const outputFile = path.join(sandboxCwd, 'integration-exclude.md')
       await generateMarkdownDoc(
         testDir,
         '**/*',
@@ -313,8 +368,6 @@ describe('Multiple Pattern Support', () => {
   })
 
   describe('.prompt-fs-to-ai File Parsing', () => {
-    const testConfigDir = path.join(__dirname, '..', 'tests', 'test-config-fixtures')
-
     beforeEach(async () => {
       await fs.mkdir(testConfigDir, { recursive: true })
     })
@@ -322,27 +375,6 @@ describe('Multiple Pattern Support', () => {
     afterEach(async () => {
       // Clean up test directory
       await fs.rm(testConfigDir, { recursive: true, force: true }).catch(() => { })
-
-      // Clean up any generated test files in root directory
-      const allFiles = await fs.readdir('.').catch(() => [])
-      for (const file of allFiles) {
-        // Never delete important project files and directories
-        if (file === 'README.md' || file === 'package.json' || file === 'bun.lock' ||
-          file === 'biome.json' || file === 'tsconfig.json' || file === 'vitest.config.ts' ||
-          file === '.git' || file === '.gitignore' || file.startsWith('.git') ||
-          file === 'node_modules' || file === 'dist' || file === 'src' ||
-          file === 'bin' || file === 'types' || file === 'memory-bank' ||
-          file === '.specstory' || file === '.vscode' || file === 'tests') {
-          continue
-        }
-        // Only delete test-generated files with specific patterns
-        if (file.startsWith('test-') || file.startsWith('integration-') ||
-          file.startsWith('config-') || file.endsWith('.diff') ||
-          file.endsWith('.current') || file.match(/.*\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.diff$/) ||
-          (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
-          await fs.rm(file, { recursive: true, force: true }).catch(() => { })
-        }
-      }
     })
 
     describe('parsePromptFsToAiFile', () => {
@@ -430,15 +462,33 @@ test/
         expect(result.exclude).toEqual(['node_modules/', '**/*.log'])
       })
 
+      it('should parse output settings directives', async () => {
+        const configContent = `# Include files
++src/**/*.ts
+
+# Output settings
+@outputFile remembered-output.md
+@outputType md
+@includeBinary false
+`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
+
+        const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
+        expect(result.include).toEqual(['src/**/*.ts'])
+        expect(result.outputFile).toBe('remembered-output.md')
+        expect(result.outputType).toBe('md')
+        expect(result.includeBinary).toBe(false)
+      })
+
       it('should return empty arrays when file does not exist', async () => {
         // Ensure no config files exist
         const targetConfig = path.join(testConfigDir, '.prompt-fs-to-ai')
-        const cwdConfig = path.join(__dirname, '.prompt-fs-to-ai')
+        const cwdConfig = path.join(sandboxFallbackCwdDir, '.prompt-fs-to-ai')
 
         await fs.rm(targetConfig, { force: true }).catch(() => {})
         await fs.rm(cwdConfig, { force: true }).catch(() => {})
 
-        const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
+        const result = await parsePromptFsToAiFile(testConfigDir, sandboxFallbackCwdDir)
 
         expect(result.include).toEqual([])
         expect(result.exclude).toEqual([])
@@ -463,7 +513,7 @@ test/
         const cwdConfigContent = `+*.md
 docs/
 `
-        await fs.writeFile(path.join(__dirname, '.prompt-fs-to-ai'), cwdConfigContent)
+        await fs.writeFile(path.join(sandboxFallbackCwdDir, '.prompt-fs-to-ai'), cwdConfigContent)
 
         // Create different config in target directory
         const targetConfigContent = `+*.ts
@@ -472,7 +522,7 @@ src/
 `
         await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), targetConfigContent)
 
-        const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
+        const result = await parsePromptFsToAiFile(testConfigDir, sandboxFallbackCwdDir)
 
         // Should use target directory config, not current directory config
         expect(result.include).toEqual(['*.ts', '*.js'])
@@ -480,7 +530,7 @@ src/
         expect(result.configFilePath).toBe(path.join(testConfigDir, '.prompt-fs-to-ai'))
 
         // Clean up
-        await fs.rm(path.join(__dirname, '.prompt-fs-to-ai'), { force: true })
+        await fs.rm(path.join(sandboxFallbackCwdDir, '.prompt-fs-to-ai'), { force: true })
       })
 
       it('should use current directory config when target directory has no config', async () => {
@@ -488,21 +538,21 @@ src/
         const cwdConfigContent = `+*.md
 docs/
 `
-        await fs.writeFile(path.join(__dirname, '.prompt-fs-to-ai'), cwdConfigContent)
+        await fs.writeFile(path.join(sandboxFallbackCwdDir, '.prompt-fs-to-ai'), cwdConfigContent)
 
-        const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
+        const result = await parsePromptFsToAiFile(testConfigDir, sandboxFallbackCwdDir)
 
         // Should use current directory config
         expect(result.include).toEqual(['*.md'])
         expect(result.exclude).toEqual(['docs/'])
-        expect(result.configFilePath).toBe(path.join(__dirname, '.prompt-fs-to-ai'))
+        expect(result.configFilePath).toBe(path.join(sandboxFallbackCwdDir, '.prompt-fs-to-ai'))
 
         // Clean up
-        await fs.rm(path.join(__dirname, '.prompt-fs-to-ai'), { force: true })
+        await fs.rm(path.join(sandboxFallbackCwdDir, '.prompt-fs-to-ai'), { force: true })
       })
 
       it('should return empty patterns when no config file exists', async () => {
-        const result = await parsePromptFsToAiFile(testConfigDir, __dirname)
+        const result = await parsePromptFsToAiFile(testConfigDir, sandboxFallbackCwdDir)
 
         expect(result.include).toEqual([])
         expect(result.exclude).toEqual([])
@@ -580,7 +630,7 @@ docs/
 `
         await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
 
-        const outputFile = path.join(__dirname, '..', 'tests', 'config-integration.md')
+        const outputFile = path.join(sandboxCwd, 'config-integration.md')
         await generateMarkdownDoc(testConfigDir, undefined, [], outputFile)
 
         const content = await fs.readFile(outputFile, 'utf-8')
@@ -612,7 +662,7 @@ docs/
         await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
 
         // Don't specify CLI patterns (use default)
-        const outputFile = path.join(__dirname, '..', 'tests', 'config-only.md')
+        const outputFile = path.join(sandboxCwd, 'config-only.md')
         await generateMarkdownDoc(testConfigDir, undefined, [], outputFile)
 
         const content = await fs.readFile(outputFile, 'utf-8')
@@ -641,7 +691,7 @@ docs/
         await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
 
         // CLI specifies only src files
-        const outputFile = path.join(__dirname, '..', 'tests', 'config-priority.md')
+        const outputFile = path.join(sandboxCwd, 'config-priority.md')
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile)
 
         const content = await fs.readFile(outputFile, 'utf-8')
@@ -670,7 +720,7 @@ node_modules/
 `
         await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
 
-        const outputFile = path.join(__dirname, '..', 'tests', 'config-command.md')
+        const outputFile = path.join(sandboxCwd, 'config-command.md')
         await generateMarkdownDoc(testConfigDir, undefined, [], outputFile)
 
         const content = await fs.readFile(outputFile, 'utf-8')
@@ -697,7 +747,7 @@ temp/
         await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
 
         // Generate doc with config patterns
-        const outputFile = path.join(__dirname, '..', 'tests', 'final-command.md')
+        const outputFile = path.join(sandboxCwd, 'final-command.md')
         await generateMarkdownDoc(testConfigDir, undefined, ['logs/'], outputFile)
 
         // Delete config file
@@ -729,18 +779,7 @@ temp/
         }
 
         // Also ensure no config file exists in current directory for this test
-        const cwdConfigFile = path.join(__dirname, '..', '.prompt-fs-to-ai')
-        const cwdConfigBackup = path.join(__dirname, '..', '.prompt-fs-to-ai.backup')
-        let cwdConfigExisted = false
-        try {
-          await fs.access(cwdConfigFile)
-          cwdConfigExisted = true
-          await fs.rename(cwdConfigFile, cwdConfigBackup)
-        } catch (error) {
-          // File doesn't exist, that's fine
-        }
-
-        const outputFile = path.join(__dirname, '..', 'tests', 'create-config.md')
+        const outputFile = path.join(sandboxCwd, 'create-config.md')
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], ['node_modules/'], outputFile)
 
         // Check that config file was created in target directory
@@ -752,11 +791,6 @@ temp/
         expect(configContent).toContain('# Auto-generated .prompt-fs-to-ai file')
         expect(configContent).toContain('+src/**/*.ts')
         expect(configContent).toContain('node_modules/')
-
-        // Restore original cwd config file if it existed
-        if (cwdConfigExisted) {
-          await fs.rename(cwdConfigBackup, cwdConfigFile)
-        }
 
         await fs.rm(outputFile, { force: true })
         await fs.rm(targetConfigFile, { force: true })
@@ -773,7 +807,7 @@ existing/
         await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
-        const outputFile = path.join(__dirname, '..', 'tests', 'existing-config.md')
+        const outputFile = path.join(sandboxCwd, 'existing-config.md')
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile)
 
         // Check that existing config was updated with new patterns
@@ -786,7 +820,7 @@ existing/
         await fs.rm(path.join(testConfigDir, '.prompt-fs-to-ai'), { force: true })
       })
 
-      it('should not create or update .prompt-fs-to-ai file when custom output file is specified', async () => {
+      it('should persist -o output file into .prompt-fs-to-ai when custom output file is specified', async () => {
         // Create existing config file
         const existingConfig = `+existing/*.ts
 -existing/
@@ -797,14 +831,68 @@ existing/
         await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
-        const outputFile = path.join(__dirname, '..', 'tests', 'custom-output.md')
+        const outputFile = path.join(sandboxCwd, 'custom-output.md')
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: 'custom-output.md', patch: false })
 
-        // Check that existing config was NOT updated (should remain the same)
+        // Config should be updated with persisted output settings
         const configContent = await fs.readFile(path.join(testConfigDir, '.prompt-fs-to-ai'), 'utf-8')
-        expect(configContent).toBe(existingConfig)
-        expect(configContent).toContain('existing/*.ts')
-        expect(configContent).toContain('existing/')
+        expect(configContent).toContain('# Output settings')
+        expect(configContent).toContain('@outputFile')
+
+        await fs.rm(outputFile, { force: true })
+        await fs.rm(path.join(testConfigDir, '.prompt-fs-to-ai'), { force: true })
+      })
+
+      it('should restore output file name from .prompt-fs-to-ai when -o is omitted', async () => {
+        // Create test files
+        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
+        await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
+
+        // Create .prompt-fs-to-ai file with output settings
+        const configContent = `+src/**/*.ts
+
+@outputFile restored-output.md
+@outputType md
+`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), configContent)
+
+        // Omit output param, should use output from config file
+        await generateMarkdownDoc(testConfigDir, undefined, [], undefined)
+
+        const restoredPath = path.resolve(process.cwd(), 'restored-output.md')
+        const exists = await fs.stat(restoredPath).then(() => true).catch(() => false)
+        expect(exists).toBe(true)
+
+        const content = await fs.readFile(restoredPath, 'utf-8')
+        expect(content).toContain('src/app.ts')
+
+        await fs.rm(restoredPath, { force: true })
+      })
+
+      it('should persist auto-excluded binary extensions to avoid re-scanning', async () => {
+        // Create test files
+        await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
+        await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
+
+        // Create a binary-like file with an unknown extension (should be detected and persisted)
+        await fs.writeFile(path.join(testConfigDir, 'data.unknownbin'), Buffer.from([0x00, 0x01, 0x00, 0xff]))
+
+        // Ensure target directory has its own config, so it doesn't fallback to CWD config
+        // and actually scans the file with unknown extension.
+        const seedConfig = `+**/*.*\n`
+        await fs.writeFile(path.join(testConfigDir, '.prompt-fs-to-ai'), seedConfig)
+
+        const outputFile = path.join(sandboxCwd, 'auto-exclude.md')
+        await generateMarkdownDoc(testConfigDir, undefined, [], outputFile)
+
+        const configContent = await fs.readFile(path.join(testConfigDir, '.prompt-fs-to-ai'), 'utf-8')
+        expect(configContent).toContain('@autoExcludeExt unknownbin')
+
+        // Second run should still succeed and not include the binary file
+        await generateMarkdownDoc(testConfigDir, ['**/*'], [], outputFile)
+        const docContent = await fs.readFile(outputFile, 'utf-8')
+        expect(docContent).toContain('src/app.ts')
+        expect(docContent).not.toContain('data.unknownbin')
 
         await fs.rm(outputFile, { force: true })
         await fs.rm(path.join(testConfigDir, '.prompt-fs-to-ai'), { force: true })
@@ -815,7 +903,7 @@ existing/
         await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
-        const outputFile = path.join(__dirname, '..', 'tests', 'patch-test.md')
+        const outputFile = path.join(sandboxCwd, 'patch-test.md')
 
         // Create initial file (this will create the .current file)
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
@@ -826,7 +914,7 @@ existing/
         // Generate patch (this should create a timestamped diff file)
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
 
-        // Check that diff file with timestamp was created in tests directory
+        // Check that diff file with timestamp was created next to output file
         const testsDir = path.dirname(outputFile)
         const patchFiles = await fs.readdir(testsDir)
         const patchFile = patchFiles.find(file => file.startsWith(path.basename(outputFile) + '.') && file.endsWith('.diff'))
@@ -848,7 +936,7 @@ existing/
 
         await fs.rm(outputFile, { force: true })
         await fs.rm(`${outputFile}.current`, { force: true })
-        await fs.rm(patchFile!, { force: true })
+        await fs.rm(path.join(testsDir, patchFile!), { force: true })
       })
 
       it('should create normal file when --patch option is used but output file does not exist', async () => {
@@ -856,7 +944,7 @@ existing/
         await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
-        const outputFile = path.join(__dirname, '..', 'tests', 'new-patch-test.md')
+        const outputFile = path.join(sandboxCwd, 'new-patch-test.md')
 
         // Generate with patch option but file doesn't exist yet
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
@@ -882,7 +970,7 @@ existing/
         await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
-        const outputFile = path.join(__dirname, '..', 'tests', 'sequential-patch-test.md')
+        const outputFile = path.join(sandboxCwd, 'sequential-patch-test.md')
 
         // First run - create initial state
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
@@ -905,7 +993,7 @@ existing/
 
         // Clean up
         for (const patchFile of patchFiles) {
-          await fs.rm(patchFile, { force: true })
+          await fs.rm(path.join(path.dirname(outputFile), patchFile), { force: true })
         }
         await fs.rm(`${outputFile}.current`, { force: true })
       })
@@ -913,59 +1001,19 @@ existing/
 
     describe('Diff file reverse operations', () => {
       beforeEach(async () => {
-        // Clean up any existing generated test files
-        const allFiles = await fs.readdir('.').catch(() => [])
-
-        for (const file of allFiles) {
-          // Never delete important project files and directories
-          if (file === 'README.md' || file === 'package.json' || file === 'bun.lock' ||
-            file === 'biome.json' || file === 'tsconfig.json' || file === 'vitest.config.ts' ||
-            file === '.git' || file === '.gitignore' || file.startsWith('.git') ||
-            file === 'node_modules' || file === 'dist' || file === 'src' ||
-            file === 'bin' || file === 'types' || file === 'memory-bank' ||
-            file === '.specstory' || file === '.vscode' || file === 'tests') {
-            continue
-          }
-          // Only delete test-generated files with specific patterns
-          if (file.startsWith('test-') || file.startsWith('integration-') ||
-            file.startsWith('config-') || file.endsWith('.diff') ||
-            file.endsWith('.current') || file.match(/.*\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.diff$/) ||
-            (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
-            await fs.rm(file, { recursive: true, force: true }).catch(() => { })
-          }
-        }
         // Create test directory structure
         await fs.mkdir(path.join(testConfigDir, 'src'), { recursive: true })
       })
 
       afterEach(async () => {
-        // Clean up any remaining generated test files in root directory
-        const allFiles = await fs.readdir('.').catch(() => [])
-        for (const file of allFiles) {
-          // Never delete important project files and directories
-          if (file === 'README.md' || file === 'package.json' || file === 'bun.lock' ||
-            file === 'biome.json' || file === 'tsconfig.json' || file === 'vitest.config.ts' ||
-            file === '.git' || file === '.gitignore' || file.startsWith('.git') ||
-            file === 'node_modules' || file === 'dist' || file === 'src' ||
-            file === 'bin' || file === 'types' || file === 'memory-bank' ||
-            file === '.specstory' || file === '.vscode' || file === 'tests') {
-            continue
-          }
-          // Only delete test-generated files with specific patterns
-          if (file.startsWith('test-') || file.startsWith('integration-') ||
-            file.startsWith('config-') || file.endsWith('.diff') ||
-            file.endsWith('.current') || file.match(/.*\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.diff$/) ||
-            (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
-            await fs.rm(file, { recursive: true, force: true }).catch(() => { })
-          }
-        }
+        // No-op: sandbox cleanup is handled by outer afterEach.
       })
 
       it.skip('should apply single diff file and restore files', async () => {
         // Create test files
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
-        const outputFile = path.join(__dirname, '..', 'tests', 'patch-reverse-test.md')
+        const outputFile = path.join(sandboxCwd, 'patch-reverse-test.md')
 
         // Create initial file with patch
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
@@ -1004,7 +1052,7 @@ existing/
         // Create test files
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
-        const outputFile = path.join(__dirname, '..', 'tests', 'multi-patch-reverse-test.md')
+        const outputFile = path.join(sandboxCwd, 'multi-patch-reverse-test.md')
 
         // Create initial file with patch
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
@@ -1018,8 +1066,8 @@ existing/
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
 
         // Find all diff files
-        const patchFiles = (await fs.readdir('.'))
-          .filter(file => file.startsWith(`${outputFile}.`) && file.endsWith('.diff'))
+        const patchFiles = (await fs.readdir(path.dirname(outputFile)))
+          .filter(file => file.startsWith(`${path.basename(outputFile)}.`) && file.endsWith('.diff'))
           .sort()
 
         expect(patchFiles.length).toBe(3)
@@ -1051,7 +1099,7 @@ existing/
         // Create test files
         await fs.writeFile(path.join(testConfigDir, 'src', 'app.ts'), 'console.log("app")')
 
-        const outputFile = path.join(__dirname, '..', 'tests', 'resume-patch-test.md')
+        const outputFile = path.join(sandboxCwd, 'resume-patch-test.md')
 
         // Create initial state and remove .current file to simulate resuming
         await generateMarkdownDoc(testConfigDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
@@ -1081,52 +1129,17 @@ existing/
   })
 
   describe('Diff Command', () => {
-    const testDiffDir = path.join(__dirname, '..', 'tests', 'test-diff-fixtures')
+    let testDiffDir = ''
 
     beforeEach(async () => {
-      // Clean up any existing generated files
-      const allFiles = await fs.readdir('.').catch(() => [])
-      const importantFiles = ['README.md', 'package.json', 'bun.lock', 'biome.json', 'tsconfig.json', 'vitest.config.ts']
-
-      for (const file of allFiles) {
-        // Skip important project files
-        if (importantFiles.includes(file)) {
-          continue
-        }
-        // Only delete test-generated files
-        if (file.includes('.') || file.includes('.') || file.endsWith('.current') ||
-          (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
-          await fs.rm(file, { force: true }).catch(() => { })
-        }
-      }
       // Create test directory
+      testDiffDir = path.join(sandboxCwd, 'test-diff-fixtures')
       await fs.mkdir(testDiffDir, { recursive: true })
     })
 
     afterEach(async () => {
       // Clean up test directory
       await fs.rm(testDiffDir, { recursive: true, force: true }).catch(() => { })
-
-      // Clean up any remaining generated test files in root directory
-      const allFiles = await fs.readdir('.').catch(() => [])
-      for (const file of allFiles) {
-        // Never delete important project files and directories
-        if (file === 'README.md' || file === 'package.json' || file === 'bun.lock' ||
-          file === 'biome.json' || file === 'tsconfig.json' || file === 'vitest.config.ts' ||
-          file === '.git' || file === '.gitignore' || file.startsWith('.git') ||
-          file === 'node_modules' || file === 'dist' || file === 'src' ||
-          file === 'bin' || file === 'types' || file === 'memory-bank' ||
-          file === '.specstory' || file === '.vscode' || file === 'tests') {
-          continue
-        }
-        // Only delete test-generated files with specific patterns
-        if (file.startsWith('test-') || file.startsWith('integration-') ||
-          file.startsWith('config-') || file.endsWith('.diff') ||
-          file.endsWith('.current') || file.match(/.*\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.diff$/) ||
-          (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
-          await fs.rm(file, { recursive: true, force: true }).catch(() => { })
-        }
-      }
     })
 
     it('should create diff between two markdown files', async () => {
@@ -1145,7 +1158,7 @@ existing/
       await generateMarkdownDoc(testDiffDir, ['src/**/*.ts', 'src/**/*.js'], [], file2)
 
       // Create diff between the two files
-      const diffFilePath = path.join(__dirname, '..', 'tests', 'test-diff-output.diff')
+      const diffFilePath = path.join(sandboxCwd, 'test-diff-output.diff')
       await createDiff(file1, file2, diffFilePath)
 
       // Check that diff file was created
@@ -1165,7 +1178,7 @@ existing/
       await fs.mkdir(path.join(testDiffDir, 'src'), { recursive: true })
       await fs.writeFile(path.join(testDiffDir, 'src', 'app.ts'), 'console.log("app")')
 
-      const markdownFile = path.join(__dirname, '..', 'tests', 'patch-diff-test.md')
+      const markdownFile = path.join(sandboxCwd, 'patch-diff-test.md')
 
       // Create markdown file
       await generateMarkdownDoc(testDiffDir, ['src/**/*.ts'], [], markdownFile)
@@ -1182,7 +1195,7 @@ existing/
       const patchFilePath = path.join(markdownDir, patchFiles[0])
 
       // Create diff between markdown file and diff file
-      const diffFilePath = path.join(__dirname, '..', 'tests', 'test-patch-diff.diff')
+      const diffFilePath = path.join(sandboxCwd, 'test-patch-diff.diff')
       await createDiff(markdownFile, patchFilePath, diffFilePath)
 
       // Check that diff file was created
@@ -1203,7 +1216,7 @@ existing/
       await fs.mkdir(path.join(testDiffDir, 'src'), { recursive: true })
       await fs.writeFile(path.join(testDiffDir, 'src', 'app.ts'), 'console.log("app")')
 
-      const outputFile = path.join(__dirname, '..', 'tests', 'patch-patch-diff-test.md')
+      const outputFile = path.join(sandboxCwd, 'patch-patch-diff-test.md')
 
       // Create initial patch
       await generateMarkdownDoc(testDiffDir, ['src/**/*.ts'], [], outputFile, { pattern: ['src/**/*.ts'], exclude: [], output: outputFile, patch: true })
@@ -1221,26 +1234,28 @@ existing/
       await generateMarkdownDoc(testDiffDir, ['src/**/*.ts', 'src/**/*.js'], [], outputFile, { pattern: ['src/**/*.ts', 'src/**/*.js'], exclude: [], output: outputFile, patch: true })
 
       // Find diff files
-      const patchFiles = (await fs.readdir('.')).filter(file => file.startsWith(`${outputFile}.`) && file.endsWith('.diff')).sort()
+      const patchFiles = (await fs.readdir(path.dirname(outputFile))).filter(file => file.startsWith(`${path.basename(outputFile)}.`) && file.endsWith('.diff')).sort()
       expect(patchFiles.length).toBe(4) // Initial + three incremental patches
 
       // Create diff between second and third patch (v1 -> v2)
-      await createDiff(patchFiles[1], patchFiles[2], path.join(__dirname, '..', 'tests', 'test-patch-patch-diff.diff'))
+      const patch1 = path.join(path.dirname(outputFile), patchFiles[1])
+      const patch2 = path.join(path.dirname(outputFile), patchFiles[2])
+      await createDiff(patch1, patch2, path.join(sandboxCwd, 'test-patch-patch-diff.diff'))
 
       // Check that diff file was created
-      const diffFiles = (await fs.readdir('.')).filter(file => file === 'test-patch-patch-diff.diff')
+      const diffFiles = (await fs.readdir(sandboxCwd)).filter(file => file === 'test-patch-patch-diff.diff')
       expect(diffFiles.length).toBe(1)
 
-      const diffContent = await fs.readFile(diffFiles[0], 'utf-8')
+      const diffContent = await fs.readFile(path.join(sandboxCwd, diffFiles[0]), 'utf-8')
       expect(diffContent).toContain('Index: file comparison')
       // Note: The diff should show the change from v1 to v2 in utils.js
 
       // Clean up
       for (const patch of patchFiles) {
-        await fs.rm(patch, { force: true })
+        await fs.rm(path.join(path.dirname(outputFile), patch), { force: true })
       }
       await fs.rm(`${outputFile}.current`, { force: true })
-      await fs.rm('test-patch-patch-diff.diff', { force: true })
+      await fs.rm(path.join(sandboxCwd, 'test-patch-patch-diff.diff'), { force: true })
       await fs.rm(testDiffDir, { recursive: true, force: true })
     })
 
@@ -1259,10 +1274,10 @@ existing/
       await fs.writeFile(path.join(dir2, 'newfile.js'), 'console.log("new");')
 
       // Create diff between directories
-      await createDiff(dir1, dir2, path.join(__dirname, '..', 'tests', 'test-dir-dir-diff.diff'))
+      await createDiff(dir1, dir2, path.join(sandboxCwd, 'test-dir-dir-diff.diff'))
 
       // Check that diff file was created
-      const diffFilePath = path.join(__dirname, '..', 'tests', 'test-dir-dir-diff.diff')
+      const diffFilePath = path.join(sandboxCwd, 'test-dir-dir-diff.diff')
       const diffExists = await fs.stat(diffFilePath).then(() => true).catch(() => false)
       expect(diffExists).toBe(true)
 
@@ -1284,23 +1299,23 @@ existing/
       await fs.writeFile(path.join(testDir, 'src', 'main.js'), 'console.log("main");')
 
       // Create markdown file
-      const mdFile = path.join(__dirname, '..', 'tests', 'test-markdown.md')
+      const mdFile = path.join(sandboxCwd, 'test-markdown.md')
       await generateMarkdownDoc(testDiffDir, ['src/main.js'], [], mdFile)
 
       // Create diff between directory and markdown
-      await createDiff(testDir, mdFile, path.join(__dirname, '..', 'tests', 'test-dir-md-diff.diff'))
+      await createDiff(testDir, mdFile, path.join(sandboxCwd, 'test-dir-md-diff.diff'))
 
       // Check that diff file was created
-      const diffFiles = (await fs.readdir('.')).filter(file => file === 'test-dir-md-diff.diff')
+      const diffFiles = (await fs.readdir(sandboxCwd)).filter(file => file === 'test-dir-md-diff.diff')
       expect(diffFiles.length).toBe(1)
 
-      const diffContent = await fs.readFile(diffFiles[0], 'utf-8')
+      const diffContent = await fs.readFile(path.join(sandboxCwd, diffFiles[0]), 'utf-8')
       expect(diffContent).toContain('Index: file comparison')
       expect(diffContent).toContain('main.js')
 
       // Clean up
       await fs.rm(mdFile, { force: true })
-      await fs.rm('test-dir-md-diff.diff', { force: true })
+      await fs.rm(path.join(sandboxCwd, 'test-dir-md-diff.diff'), { force: true })
       await fs.rm(testDiffDir, { recursive: true, force: true })
     })
 
@@ -1318,52 +1333,17 @@ existing/
   })
 
   describe('Reverse Operation', () => {
-    const testMarkdownDir = path.join(__dirname, '..', 'tests', 'test-reverse-fixtures')
+    let testMarkdownDir = ''
 
     beforeEach(async () => {
-      // Clean up any existing generated files
-      const allFiles = await fs.readdir('.').catch(() => [])
-      const importantFiles = ['README.md', 'package.json', 'bun.lock', 'biome.json', 'tsconfig.json', 'vitest.config.ts']
-
-      for (const file of allFiles) {
-        // Skip important project files
-        if (importantFiles.includes(file)) {
-          continue
-        }
-        // Only delete test-generated files
-        if (file.includes('.') || file.includes('.') || file.endsWith('.current') ||
-          (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
-          await fs.rm(file, { force: true }).catch(() => { })
-        }
-      }
       // Create test directory structure for reverse operation
+      testMarkdownDir = path.join(sandboxCwd, 'test-reverse-fixtures')
       await fs.mkdir(testMarkdownDir, { recursive: true })
     })
 
     afterEach(async () => {
       // Clean up test directory
       await fs.rm(testMarkdownDir, { recursive: true, force: true }).catch(() => { })
-
-      // Clean up any remaining generated test files in root directory
-      const allFiles = await fs.readdir('.').catch(() => [])
-      for (const file of allFiles) {
-        // Never delete important project files and directories
-        if (file === 'README.md' || file === 'package.json' || file === 'bun.lock' ||
-          file === 'biome.json' || file === 'tsconfig.json' || file === 'vitest.config.ts' ||
-          file === '.git' || file === '.gitignore' || file.startsWith('.git') ||
-          file === 'node_modules' || file === 'dist' || file === 'src' ||
-          file === 'bin' || file === 'types' || file === 'memory-bank' ||
-          file === '.specstory' || file === '.vscode' || file === 'tests') {
-          continue
-        }
-        // Only delete test-generated files with specific patterns
-        if (file.startsWith('test-') || file.startsWith('integration-') ||
-          file.startsWith('config-') || file.endsWith('.diff') ||
-          file.endsWith('.current') || file.match(/.*\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.diff$/) ||
-          (file.endsWith('.md') && file.match(/^(test-|integration-|config-|final-|create-|existing-|patch-|new-|sequential-|resume-|multi-|diff-)/))) {
-          await fs.rm(file, { recursive: true, force: true }).catch(() => { })
-        }
-      }
     })
 
     describe('Markdown Parsing', () => {
