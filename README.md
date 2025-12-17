@@ -34,7 +34,7 @@
     - [How It Works](#how-it-works)
     - [Supported Input Types](#supported-input-types)
       - [Regular Markdown Files](#regular-markdown-files)
-      - [Patch Files](#patch-files)
+      - [Diff Files](#diff-files)
       - [Current State Files](#current-state-files)
     - [Advanced Usage Examples](#advanced-usage-examples)
       - [Selective File Extraction](#selective-file-extraction)
@@ -48,7 +48,7 @@
     - [How Patch Mode Works](#how-patch-mode-works)
     - [Command Usage](#command-usage)
     - [Generated Files](#generated-files)
-      - [Patch Files (`output.md.patch.TIMESTAMP`)](#patch-files-outputmdpatchtimestamp)
+      - [Diff Files (`output.md.TIMESTAMP.diff`)](#diff-files-outputmdtimestampdiff)
       - [Current State File (`output.md.current`)](#current-state-file-outputmdcurrent)
     - [Patch File Structure](#patch-file-structure)
       - [Code Review Workflow](#code-review-workflow)
@@ -69,7 +69,7 @@
     - [Supported Input Types](#supported-input-types-1)
       - [Directories](#directories)
       - [Markdown Files](#markdown-files)
-      - [Patch Files](#patch-files-1)
+      - [Diff Files](#diff-files-1)
       - [Mixed Types](#mixed-types)
     - [Output Format](#output-format)
     - [Advanced Diff Scenarios](#advanced-diff-scenarios)
@@ -163,7 +163,7 @@ The tool excels at handling complex project structures while maintaining flexibi
 - `@types/node`, `@types/diff`: TypeScript type definitions
 
 ### Development Tools
-- **Testing**: Vitest with 85%+ code coverage
+- **Testing**: Vitest (coverage available via `@vitest/coverage-v8`)
 - **Linting**: Biome (fast, zero-config linter)
 - **Package Manager**: Bun (fast alternative to npm)
 
@@ -217,10 +217,22 @@ You can install `prompt-fs-to-ai` globally using npm:
 npm install -g prompt-fs-to-ai
 ```
 
+You can also install it globally using Bun:
+
+```bash
+bun add -g prompt-fs-to-ai
+```
+
 If you want to install it locally within your project (for development or as a project dependency):
 
 ```bash
 npm install prompt-fs-to-ai --save-dev  # Or --save if it's a runtime dependency
+```
+
+Or with Bun:
+
+```bash
+bun add -d prompt-fs-to-ai  # Or without -d if it's a runtime dependency
 ```
 
 If you're developing the package, you can link it locally:
@@ -260,9 +272,11 @@ prompt-fs-to-ai <directory> [options]
     *   `**/*.test.js`: Excludes files ending in `.test.js`.
     *  `"node_modules dist **/*.test.js"`: Excludes all above
 
-*   `-o, --output <filename>`:  The name of the output Markdown file.  Defaults to `output.md`.
+*   `-o, --output <filename>`:  The name of the output Markdown file. If omitted, the tool uses the last remembered output from `.prompt-fs-to-ai` (if present), otherwise defaults to `<directory-name>-output.md`.
 
 *   `--patch`:  Create sequential patch files showing differences from the previous state instead of replacing the existing output file.  Useful for tracking changes over time without modifying the original file.
+
+*   `--include-binary`: Include binary/proprietary files (not recommended). By default, binary/proprietary files are skipped.
 
 ## Configuration File (.prompt-fs-to-ai)
 
@@ -274,6 +288,7 @@ You can create a `.prompt-fs-to-ai` file in your project root directory to defin
 *   Empty lines are ignored
 *   Lines starting with `+` define **include patterns** (files to include)
 *   Lines starting with `-` or without prefix define **exclude patterns** (files to exclude)
+*   Lines starting with `@` define **directives** (metadata / behavior toggles)
 
 **Example `.prompt-fs-to-ai` file:**
 
@@ -297,6 +312,25 @@ build/
 .cache/
 ```
 
+**Directives (optional):**
+
+```gitignore
+# Output settings (persisted defaults)
+@outputFile my-project-output.md
+@outputType md
+
+# Include binary files (off by default)
+@includeBinary true
+
+# Auto-excluded binary extensions (added automatically when detected)
+@autoExcludeExt png
+@autoExcludeExt docx
+
+# Auto-excluded paths (default ignore list + any additional auto-excludes)
+@autoExcludePath **/node_modules/**
+@autoExcludePath **/.git/**
+```
+
 **Priority:**
 
 1. **CLI patterns** have the highest priority and override configuration file patterns
@@ -304,7 +338,9 @@ build/
 3. If no config file exists in the target directory, patterns from `.prompt-fs-to-ai` in the **current working directory** are used as fallback
 4. If no config files are found, the default `**/*` pattern is used
 5. **Exclude patterns** from both CLI and config file are combined
-6. **Auto-creation/Update**: The `.prompt-fs-to-ai` file in the target directory is automatically created or updated with the patterns used for the current run
+6. **Default ignores** (e.g. `.git/`, `node_modules/`, build folders, `.env*`, `.prompt-fs-to-ai`, `*.diff`, `*.current`) are applied for performance and safety
+7. **Include overrides default/auto ignores**: if your include patterns explicitly target a normally ignored folder (e.g. `node_modules/**`), the tool will not ignore it for that run
+8. **Auto-creation/Update**: The `.prompt-fs-to-ai` file in the target directory is automatically created or updated with the patterns used for the current run (including remembered output and auto-excludes)
 
 ## Use Cases & Examples
 
@@ -336,7 +372,7 @@ prompt-fs-to-ai /path/to/terraform -p "**/*.tf" -p "**/*.tfvars" -p "README.md" 
 
 ### Basic Examples
 
-1. **Generate documentation for the entire project, saving to `output.md`:**
+1. **Generate documentation for the entire project (default output is based on directory name):**
 
     ```bash
     prompt-fs-to-ai /path/to/your/project
@@ -369,7 +405,7 @@ prompt-fs-to-ai /path/to/terraform -p "**/*.tf" -p "**/*.tfvars" -p "README.md" 
     ```bash
     prompt-fs-to-ai /path/to/my/project --patch
     ```
-    This will create timestamped `.patch` files showing the differences between the current state and the previous state, without modifying the original file. Each subsequent run creates a new patch file that accounts for all previous changes.
+    This will create timestamped `.diff` files showing the differences between the current state and the previous state, without modifying the original file. Each subsequent run creates a new diff file that accounts for all previous changes.
 
 #### Advanced Workflow Examples
 
@@ -395,7 +431,7 @@ prompt-fs-to-ai /path/to/project --patch
 prompt-fs-to-ai /path/to/project --patch
 
 # Review all changes
-prompt-fs-to-ai reverse output.md.patch.2025-09-25T14-30-00-000Z changes-overview
+prompt-fs-to-ai reverse output.md.2025-09-25T14-30-00-000Z.diff changes-overview
 ```
 
 **Compare project states:**
@@ -419,7 +455,7 @@ prompt-fs-to-ai reverse <input-file> [output-directory] [options]
 
 ### Parameters
 
-*   `<input-file>`: Path to the markdown file created by `prompt-fs-to-ai` or a patch file (with `.patch.` in filename)
+*   `<input-file>`: Path to the markdown file created by `prompt-fs-to-ai` or a diff file (ends with `.diff`)
 *   `[output-directory]`: (Optional) Directory where to restore the files. Defaults to the input filename without extension.
 
 ### Options
@@ -443,8 +479,8 @@ prompt-fs-to-ai reverse <input-file> [output-directory] [options]
 - Contains complete project state at time of creation
 
 <a id="patch-files-reverse"></a>
-#### Patch Files
-- Files with `.patch.` in filename (e.g., `output.md.patch.2025-09-25T10-30-00-000Z`)
+#### Diff Files
+- Files ending with `.diff` (e.g., `output.md.2025-09-25T10-30-00-000Z.diff`)
 - Automatically finds and applies all preceding patches
 - Recreates project state at specific point in time
 
@@ -469,14 +505,14 @@ prompt-fs-to-ai reverse docs.md frontend-only -f "**/*.{ts,tsx,vue}" -f "**/*.{c
 #### Time Travel with Patches
 ```bash
 # Restore project state from specific timestamp
-prompt-fs-to-ai reverse output.md.patch.2025-09-25T14-30-00-000Z project-at-2pm
+prompt-fs-to-ai reverse output.md.2025-09-25T14-30-00-000Z.diff project-at-2pm
 
 # Restore to state before major refactoring
-prompt-fs-to-ai reverse output.md.patch.2025-09-20T09-15-00-000Z pre-refactor-state
+prompt-fs-to-ai reverse output.md.2025-09-20T09-15-00-000Z.diff pre-refactor-state
 
 # Compare states by restoring to different directories
-prompt-fs-to-ai reverse patch-v1 restored-v1
-prompt-fs-to-ai reverse patch-v2 restored-v2
+prompt-fs-to-ai reverse state-v1.2025-09-25T10-00-00-000Z.diff restored-v1
+prompt-fs-to-ai reverse state-v2.2025-09-25T15-00-00-000Z.diff restored-v2
 diff -r restored-v1 restored-v2
 ```
 
@@ -507,10 +543,12 @@ The command provides detailed error messages for common issues:
 ```bash
 #!/bin/bash
 # Restore latest project state in CI
-LATEST_PATCH=$(ls -t *.patch.* | head -1)
-prompt-fs-to-ai reverse "$LATEST_PATCH" ./restored
-npm install
-npm test
+LATEST_DIFF=$(ls -t *.diff | head -1)
+prompt-fs-to-ai reverse "$LATEST_DIFF" ./restored
+
+# Install deps and run tests (example)
+bun install || npm install
+bun test || npm test
 ```
 
 #### Git Hook for Documentation Backup
@@ -518,7 +556,7 @@ npm test
 #!/bin/bash
 # Pre-commit hook to backup current state
 prompt-fs-to-ai . --patch
-echo "Project state backed up to patch file"
+echo "Project state backed up to diff/current files"
 ```
 
 ## patch
@@ -529,7 +567,7 @@ The `patch` mode (`--patch` flag) enables incremental documentation tracking, cr
 
 Instead of overwriting the main documentation file, patch mode:
 
-1. **Creates timestamped patches**: Each run generates a `.patch.TIMESTAMP` file containing only changes
+1. **Creates timestamped diffs**: Each run generates a `<output>.TIMESTAMP.diff` file containing only changes
 2. **Maintains current state**: Updates a `.current` file with the latest complete documentation
 3. **Preserves history**: Never modifies or deletes existing documentation
 4. **Enables time travel**: Any historical state can be reconstructed using `reverse`
@@ -552,10 +590,10 @@ prompt-fs-to-ai /project --patch -o custom-docs.md
 
 ### Generated Files
 
-#### Patch Files (`output.md.patch.TIMESTAMP`)
-- **Format**: `filename.patch.YYYY-MM-DDTHH-MM-SS-SSSZ`
+#### Diff Files (`output.md.TIMESTAMP.diff`)
+- **Format**: `outputFile.YYYY-MM-DDTHH-MM-SS-SSSZ.diff`
 - **Content**: Unified diff format showing exactly what changed
-- **Example**: `project-docs.md.patch.2025-09-25T14-30-15-123Z`
+- **Example**: `project-docs.md.2025-09-25T14-30-15-123Z.diff`
 
 #### Current State File (`output.md.current`)
 - **Purpose**: Contains the complete latest documentation
@@ -618,8 +656,8 @@ prompt-fs-to-ai /feature-branch --patch
 prompt-fs-to-ai /feature-branch --patch
 
 # Review changes
-prompt-fs-to-ai diff output.md.patch.2025-09-25T09-00-00-000Z \
-                   output.md.patch.2025-09-25T17-00-00-000Z \
+prompt-fs-to-ai diff output.md.2025-09-25T09-00-00-000Z.diff \
+                   output.md.2025-09-25T17-00-00-000Z.diff \
                    -o feature-changes.diff
 ```
 
@@ -634,7 +672,7 @@ cd "$PROJECT_DIR"
 prompt-fs-to-ai . --patch -o "backup-$(date +%Y%m%d).md"
 
 # Archive patches older than 30 days
-find . -name "*.patch.*" -mtime +30 -exec mv {} "$BACKUP_DIR" \;
+find . -name "*.diff" -mtime +30 -exec mv {} "$BACKUP_DIR" \;
 ```
 
 ### Managing Patch Files
@@ -642,34 +680,34 @@ find . -name "*.patch.*" -mtime +30 -exec mv {} "$BACKUP_DIR" \;
 #### Listing Patches
 ```bash
 # See all patches chronologically
-ls -la *.patch.* | sort
+ls -la *.diff | sort
 
 # Count patches
-ls *.patch.* | wc -l
+ls *.diff | wc -l
 
 # Find patches by date range
-ls *.patch.2025-09-*  # All September patches
+ls *.2025-09-*.diff  # All September diffs
 ```
 
 #### Cleaning Up Patches
 ```bash
 # Remove patches older than 90 days
-find . -name "*.patch.*" -mtime +90 -delete
+find . -name "*.diff" -mtime +90 -delete
 
 # Archive old patches
-tar -czf patches-archive.tar.gz *.patch.2025-0[1-6]*  # First half of year
+tar -czf diffs-archive.tar.gz *.2025-0[1-6]*.diff  # First half of year
 ```
 
 #### Analyzing Patch History
 ```bash
 # See patch creation timeline
-ls -lt *.patch.* | head -10
+ls -lt *.diff | head -10
 
 # Check patch sizes (larger = more changes)
-ls -lhS *.patch.* | head -5
+ls -lhS *.diff | head -5
 
 # Find biggest changes
-du -h *.patch.* | sort -hr | head -3
+du -h *.diff | sort -hr | head -3
 ```
 
 ### Integration with Version Control
@@ -679,7 +717,7 @@ du -h *.patch.* | sort -hr | head -3
 # Pre-commit hook
 #!/bin/bash
 prompt-fs-to-ai . --patch
-git add *.patch.*
+git add *.diff *.current
 echo "Documentation snapshot created"
 ```
 
@@ -694,20 +732,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Generate documentation patch
+      - name: Generate documentation diff
         run: |
-          npm install -g prompt-fs-to-ai
+          npm install -g prompt-fs-to-ai  # or: bun add -g prompt-fs-to-ai
           prompt-fs-to-ai . --patch
-      - name: Upload patches
+      - name: Upload diffs
         uses: actions/upload-artifact@v3
         with:
-          name: docs-patches
-          path: "*.patch.*"
+          name: docs-diffs
+          path: "*.diff"
 ```
 
 ### Performance Considerations
 
-- **Storage**: Patches are small (only changes), not full files
+- **Storage**: Diffs are small (only changes), not full files
 - **Speed**: Subsequent runs are faster (no full regeneration)
 - **Memory**: Lower memory usage for large projects
 - **Backup**: Easy to archive and restore historical states
@@ -725,22 +763,22 @@ prompt-fs-to-ai /project --patch  # Now works
 
 **Missing .current file:**
 ```bash
-# Recreate from latest patch
-LATEST_PATCH=$(ls -t *.patch.* | head -1)
-prompt-fs-to-ai reverse "$LATEST_PATCH" temp && rm -rf temp
+# Recreate from latest diff
+LATEST_DIFF=$(ls -t *.diff | head -1)
+prompt-fs-to-ai reverse "$LATEST_DIFF" temp && rm -rf temp
 ```
 
 **Patch conflicts:**
-- Patches are always additive, no conflicts possible
-- Each patch is independent and self-contained
+- Diffs are always additive, no conflicts possible
+- Each diff is independent and self-contained
 
 ### Best Practices
 
-1. **Regular snapshots**: Use cron jobs or CI for regular patches
+1. **Regular snapshots**: Use cron jobs or CI for regular diffs
 2. **Meaningful naming**: Use descriptive output filenames
-3. **Archive strategy**: Move old patches to archive storage
-4. **Monitor disk usage**: Patches can accumulate over time
-5. **Test restoration**: Regularly verify `reverse` works with your patches
+3. **Archive strategy**: Move old diffs to archive storage
+4. **Monitor disk usage**: Diffs can accumulate over time
+5. **Test restoration**: Regularly verify `reverse` works with your diffs
 
 ## diff
 
@@ -774,16 +812,16 @@ prompt-fs-to-ai diff docs-v1.md docs-v2.md -o docs-changes.diff
 prompt-fs-to-ai diff project-a.md project-b.md -o project-comparison.diff
 ```
 
-<a id="patch-files-diff"></a>
-#### Patch Files
+<a id="diff-files-diff"></a>
+#### Diff Files
 ```bash
 # Compare different points in time
-prompt-fs-to-ai diff output.patch.2025-09-25T10-00-00-000Z \
-                   output.patch.2025-09-25T15-00-00-000Z \
+prompt-fs-to-ai diff output.md.2025-09-25T10-00-00-000Z.diff \
+                   output.md.2025-09-25T15-00-00-000Z.diff \
                    -o afternoon-changes.diff
 
-# Compare patch states
-prompt-fs-to-ai diff patch-before-refactor patch-after-refactor -o refactor-impact.diff
+# Compare diff states
+prompt-fs-to-ai diff state-before-refactor.diff state-after-refactor.diff -o refactor-impact.diff
 ```
 
 #### Mixed Types
@@ -792,7 +830,7 @@ prompt-fs-to-ai diff patch-before-refactor patch-after-refactor -o refactor-impa
 prompt-fs-to-ai diff /live/project project-docs.md -o live-vs-docs.diff
 
 # Patch vs Current State
-prompt-fs-to-ai diff output.patch.2025-09-25T12-00-00-000Z output.current -o current-changes.diff
+prompt-fs-to-ai diff output.md.2025-09-25T12-00-00-000Z.diff output.md.current -o current-changes.diff
 ```
 
 ### Output Format
@@ -817,8 +855,8 @@ Index: comparison
 ```bash
 # Compare feature branch states
 prompt-fs-to-ai diff \
-  output.patch.before-feature \
-  output.patch.after-feature \
+  output.md.2025-09-25T09-00-00-000Z.diff \
+  output.md.2025-09-25T17-00-00-000Z.diff \
   -o feature-review.diff
 
 # Analyze refactoring impact
@@ -924,7 +962,7 @@ fi
 
 #### File Size & Count Limits
 - **Maximum file size**: Limited by available RAM (recommended <50MB per file)
-- **Binary files**: Not supported (will be skipped with warning)
+- **Binary/proprietary files**: Skipped by default (images, docx/pptx/xlsx, archives, etc.). Use `--include-binary` to include them (not recommended).
 - **Encoding**: UTF-8 only (other encodings may cause issues)
 - **Symbolic links**: Followed, but may cause infinite loops in circular structures
 
@@ -934,7 +972,7 @@ fi
 - Case sensitivity depends on the underlying file system
 
 #### Patch System Limitations
-- Patches are cumulative but may become large over time
+- Diffs are cumulative but may become large over time
 - Binary file changes cannot be tracked in patches
 - File renames/moves are tracked as delete+add operations
 
@@ -978,24 +1016,28 @@ fi
 2.  **Install dependencies:**
 
     ```bash
-    npm install
+    bun install  # or npm install
     ```
 
 3.  **Build the project:**
 
     ```bash
-    npm run build
+    bun run build  # or npm run build
     ```
 
 4. **Run locally**
+
+    Build first, then run the CLI entrypoint:
+
     ```bash
-    npm start /path/to/your/project --options
+    bun run build
+    node bin/run.js /path/to/your/project --options
     ```
 
 5.  **Run tests (if you have tests):**
 
     ```bash
-    npm test
+    bun test  # or npm test
     ```
 
 ##  Publishing (for package maintainers)
@@ -1036,7 +1078,7 @@ A: Binary files are automatically skipped. For large text files, there's no stri
 
 **Q: How does the patch system work?**
 
-A: The patch system creates incremental diffs between documentation states. Each `--patch` run generates a timestamped `.patch` file containing only the changes, making it efficient for tracking project evolution without duplicating unchanged content.
+A: The patch system creates incremental diffs between documentation states. Each `--patch` run generates a timestamped `.diff` file containing only the changes, making it efficient for tracking project evolution without duplicating unchanged content.
 
 **Q: Can I automate documentation generation in CI/CD?**
 
@@ -1098,7 +1140,7 @@ prompt-fs-to-ai .
 **Problem:** Patches not applying correctly
 ```
 Solution: Ensure you're applying patches in chronological order
-prompt-fs-to-ai reverse output.md.patch.2025-09-25T10-00-00-000Z
+prompt-fs-to-ai reverse output.md.2025-09-25T10-00-00-000Z.diff
 ```
 
 **Problem:** Missing `.current` file
@@ -1129,7 +1171,7 @@ prompt-fs-to-ai /test/dir -p "**/*.js" -e "node_modules"
 cat .prompt-fs-to-ai  # Check generated config
 
 # Check patch files
-ls -la *.patch.*      # List all patch files
+ls -la *.diff      # List all diff files
 ```
 
 ## Advanced Integration Examples
@@ -1260,37 +1302,37 @@ echo "AI context prepared in: $OUTPUT_DIR"
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 DOCS_DIR="${REPO_ROOT}/docs"
-PATCH_DIR="${DOCS_DIR}/patches"
+DIFF_DIR="${DOCS_DIR}/diffs"
 
-mkdir -p "$PATCH_DIR"
+mkdir -p "$DIFF_DIR"
 
-# Generate incremental documentation patches
+# Generate incremental documentation diffs
 cd "$REPO_ROOT"
 prompt-fs-to-ai . --patch -o "${DOCS_DIR}/api-docs.md"
 
 # Check for significant changes
-LATEST_PATCH=$(ls -t ${DOCS_DIR}/*.patch.* 2>/dev/null | head -1)
-if [ -n "$LATEST_PATCH" ]; then
-    PATCH_SIZE=$(stat -f%z "$LATEST_PATCH" 2>/dev/null || stat -c%s "$LATEST_PATCH" 2>/dev/null)
+LATEST_DIFF=$(ls -t ${DOCS_DIR}/*.diff 2>/dev/null | head -1)
+if [ -n "$LATEST_DIFF" ]; then
+    DIFF_SIZE=$(stat -f%z "$LATEST_DIFF" 2>/dev/null || stat -c%s "$LATEST_DIFF" 2>/dev/null)
 
-    if [ "$PATCH_SIZE" -gt 10000 ]; then  # Significant changes
+    if [ "$DIFF_SIZE" -gt 10000 ]; then  # Significant changes
         echo "🚨 Significant documentation changes detected!"
 
         # Generate change summary
         prompt-fs-to-ai diff \
             "${DOCS_DIR}/api-docs.md.current" \
-            "$LATEST_PATCH" \
+            "$LATEST_DIFF" \
             -o "${DOCS_DIR}/recent-changes.diff"
 
         # Notify team (example with Slack webhook)
         curl -X POST -H 'Content-type: application/json' \
-             --data "{\"text\":\"Major docs changes detected: $PATCH_SIZE bytes\"}" \
+             --data "{\"text\":\"Major docs changes detected: $DIFF_SIZE bytes\"}" \
              $SLACK_WEBHOOK_URL
     fi
 fi
 
-# Archive old patches (keep last 30 days)
-find "$PATCH_DIR" -name "*.patch.*" -mtime +30 -exec mv {} "${PATCH_DIR}/archive/" \;
+# Archive old diffs (keep last 30 days)
+find "$DIFF_DIR" -name "*.diff" -mtime +30 -exec mv {} "${DIFF_DIR}/archive/" \;
 ```
 
 ### Disaster Recovery System
@@ -1608,7 +1650,7 @@ We welcome contributions from the community! Here's how you can help improve `pr
 ### Code Quality Standards
 
 - **TypeScript**: Strict type checking enabled
-- **Testing**: Minimum 85% code coverage required
+- **Testing**: Add tests for new behavior where reasonable
 - **Linting**: Biome configuration must pass
 - **Formatting**: 2 spaces, no tabs, Unix line endings
 
@@ -1650,7 +1692,8 @@ bun test
 bun run build
 
 # Manual testing with real projects
-bun run start /path/to/test/project
+bun run build
+node bin/run.js /path/to/test/project
 ```
 
 Thank you for contributing to `prompt-fs-to-ai`! 🎉
