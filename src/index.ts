@@ -46,11 +46,115 @@ const DEFAULT_IGNORED_GLOB_PATTERNS = [
 
   // Tool config
   '**/.prompt-fs-to-ai',
+  '**/.*ignore',
 
   // Common sensitive config
   '**/.env',
   '**/.env.*',
 ];
+
+function looksLikeGlobPattern(pattern: string): boolean {
+  return /[\*\?\[\]\{\}\(\)]/.test(pattern);
+}
+
+function normalizeIgnoreLineToGlobPatterns(line: string): string[] {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('#')) {
+    return [];
+  }
+  if (trimmed.startsWith('!')) {
+    // Negation is not currently supported at glob-ignore stage.
+    // We still respect ignore rules as excludes; explicit includes can override.
+    return [];
+  }
+
+  // Gitignore allows escaping with backslash; keep it simple.
+  let p = trimmed.replace(/\\/g, '/');
+  if (p.startsWith('/')) {
+    p = p.slice(1);
+  }
+
+  // Directory patterns: "dist/" -> "dist/**"
+  if (p.endsWith('/')) {
+    const dir = p.replace(/\/+$/, '');
+    if (!dir) {
+      return [];
+    }
+    return [`${dir}/**`, `**/${dir}/**`];
+  }
+
+  // No slash: in gitignore it matches anywhere; prefix "**/"
+  if (!p.includes('/')) {
+    if (looksLikeGlobPattern(p)) {
+      return [`**/${p}`];
+    }
+    // Bare name: match file or directory anywhere
+    return [`**/${p}`, `**/${p}/**`];
+  }
+
+  // Contains slash: treat as path-like pattern, and also ignore nested occurrences
+  if (looksLikeGlobPattern(p)) {
+    return [p, `**/${p}`];
+  }
+  return [p, `**/${p}`];
+}
+
+async function readIgnoreFileAsGlobPatterns(rootDir: string, fileName: string): Promise<string[]> {
+  const filePath = path.join(rootDir, fileName);
+  try {
+    const content = await fs.readFile(filePath, 'utf-8');
+    const patterns: string[] = [];
+    for (const line of content.split('\n')) {
+      patterns.push(...normalizeIgnoreLineToGlobPatterns(line));
+    }
+    return [...new Set(patterns)].filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function discoverDotIgnoreFiles(rootDir: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(rootDir, { withFileTypes: true });
+    const files: string[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isFile()) {
+        continue;
+      }
+      const name = entry.name;
+      // Support ".<app>ignore" style files like .dockerignore, .npmignore, .eslintignore, etc.
+      if (/^\.[^/]+ignore$/i.test(name)) {
+        files.push(name);
+      }
+    }
+
+    return files;
+  } catch {
+    return [];
+  }
+}
+
+async function readAllDotIgnoreFilesAsGlobPatterns(rootDir: string): Promise<string[]> {
+  const discovered = await discoverDotIgnoreFiles(rootDir);
+  const patterns: string[] = [];
+  for (const fileName of discovered) {
+    patterns.push(...(await readIgnoreFileAsGlobPatterns(rootDir, fileName)));
+  }
+
+  return [...new Set(patterns)].filter(Boolean);
+}
+
+function extractLiteralHintFromPattern(pattern: string): string {
+  // Heuristic: strip common glob metacharacters to get a "hint" substring.
+  // Used only to decide whether an include likely targets an ignored path.
+  return pattern
+    .replace(/[\*\?\[\]\{\}\(\)]/g, '')
+    .replace(/\/{2,}/g, '/')
+    .replace(/^\*\*\//, '')
+    .replace(/^\/+/, '')
+    .trim();
+}
 
 function getLowercaseExtension(filePath: string): string {
   const ext = path.extname(filePath);
@@ -259,6 +363,73 @@ function filterAutoExcludedPathsForIncludes(includePatterns: string[], autoExclu
   });
 }
 
+function filterIgnoredPatternsForIncludes(includePatterns: string[], ignorePatterns: string[]): string[] {
+  const requiredGroups = computeRequiredIgnoredGroupsFromIncludes(includePatterns);
+  const includeJoined = includePatterns.join('\n').toLowerCase();
+  const includeLiterals = includePatterns
+    .map(p => p.trim().toLowerCase())
+    .filter(p => p.length > 0 && !looksLikeGlobPattern(p));
+
+  return ignorePatterns.filter((p) => {
+    const lower = p.toLowerCase();
+
+    // Fast group-based overrides
+    if (requiredGroups.has('node_modules') && lower.includes('node_modules')) {
+      return false;
+    }
+    if (requiredGroups.has('.git') && lower.includes('.git')) {
+      return false;
+    }
+    if (requiredGroups.has('dist') && lower.includes('/dist/')) {
+      return false;
+    }
+    if (requiredGroups.has('build') && lower.includes('/build/')) {
+      return false;
+    }
+    if (requiredGroups.has('coverage') && lower.includes('coverage')) {
+      return false;
+    }
+    if (requiredGroups.has('.next') && lower.includes('.next')) {
+      return false;
+    }
+    if (requiredGroups.has('.turbo') && lower.includes('.turbo')) {
+      return false;
+    }
+    if (requiredGroups.has('.cache') && lower.includes('.cache')) {
+      return false;
+    }
+    if (requiredGroups.has('out') && lower.includes('/out/')) {
+      return false;
+    }
+    if (requiredGroups.has('.vercel') && lower.includes('.vercel')) {
+      return false;
+    }
+    if (requiredGroups.has('.env') && lower.includes('.env')) {
+      return false;
+    }
+    if (requiredGroups.has('.prompt-fs-to-ai') && lower.includes('.prompt-fs-to-ai')) {
+      return false;
+    }
+
+    // Heuristic: if include patterns explicitly mention the literal part of this ignore pattern,
+    // don't ignore it for this run.
+    const hint = extractLiteralHintFromPattern(lower);
+    if (hint.length >= 3 && includeJoined.includes(hint)) {
+      return false;
+    }
+
+    // Stronger override: explicit literal includes should not be excluded by ignore patterns
+    // that target the same literal path/name.
+    for (const inc of includeLiterals) {
+      if (lower === inc || lower.endsWith(`/${inc}`) || hint === inc) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+}
+
 const getDefaultOutputFileName = (dirPath: string) => {
   const dirName = basename(dirPath);
   return `${dirName}-output.md`;
@@ -294,6 +465,7 @@ export async function processMultiplePatterns(
     discoveredBinaryExtensions?: Set<string>;
     additionalIgnorePatterns?: string[];
     defaultIgnorePatterns?: string[];
+    ignoreFilePatterns?: string[];
   }
 ): Promise<string[]> {
   const allFiles = new Set<string>();
@@ -301,7 +473,12 @@ export async function processMultiplePatterns(
   const discoveredBinaryExtensions = options?.discoveredBinaryExtensions;
   const additionalIgnorePatterns = options?.additionalIgnorePatterns || [];
   const defaultIgnorePatterns = options?.defaultIgnorePatterns ?? DEFAULT_IGNORED_GLOB_PATTERNS;
+  const ignoreFilePatterns = options?.ignoreFilePatterns;
   const outputBaseName = path.basename(finalOutputFile);
+
+  const effectiveIgnoreFilePatterns = ignoreFilePatterns ?? [
+    ...(await readAllDotIgnoreFilesAsGlobPatterns(rootDir)),
+  ];
 
   for (const pattern of patterns) {
     const glob = new Glob(
@@ -320,6 +497,7 @@ export async function processMultiplePatterns(
           '*output.md', // Exclude all files ending with output.md
           '**/*output.md', // Exclude in all subdirectories
           ...defaultIgnorePatterns,
+          ...effectiveIgnoreFilePatterns,
           ...additionalIgnorePatterns,
           ...excludePatterns
         ]
@@ -361,6 +539,43 @@ export async function processMultiplePatterns(
         console.warn(`Skipping ${file}: ${error.message}`);
       }
     }
+
+    // Fallback: if user provided an explicit literal file path, include it even if
+    // ignore patterns prevented glob from returning it. This preserves the rule:
+    // ignored by default, but included when explicitly specified.
+    if (!looksLikeGlobPattern(pattern)) {
+      const rel = pattern.trim().replace(/\\/g, '/').replace(/^\.\/+/, '');
+      if (rel.length > 0 && !rel.endsWith('/')) {
+        const fullPath = path.join(rootDir, rel);
+        try {
+          const stats = await fs.stat(fullPath);
+          if (stats.isFile()) {
+            if (!includeBinary) {
+              if (isDefaultBinaryByExtension(rel)) {
+                const ext = normalizeExtension(getLowercaseExtension(rel));
+                if (ext && discoveredBinaryExtensions) {
+                  discoveredBinaryExtensions.add(ext);
+                }
+              } else {
+                const binary = await isLikelyBinaryFile(fullPath);
+                if (binary) {
+                  const ext = normalizeExtension(getLowercaseExtension(rel));
+                  if (ext && discoveredBinaryExtensions) {
+                    discoveredBinaryExtensions.add(ext);
+                  }
+                } else {
+                  allFiles.add(rel);
+                }
+              }
+            } else {
+              allFiles.add(rel);
+            }
+          }
+        } catch {
+          // ignore missing file
+        }
+      }
+    }
   }
 
   return Array.from(allFiles).sort();
@@ -396,6 +611,7 @@ export async function generateMarkdownDoc(
   // Read .prompt-fs-to-ai file for additional patterns
   // First check target directory, then current working directory
   const configPatterns = await parsePromptFsToAiFile(rootDir, process.cwd());
+  const dotIgnorePatterns = await readAllDotIgnoreFilesAsGlobPatterns(rootDir);
   const configOutputFile = configPatterns.outputFile && configPatterns.outputFile.trim().length > 0
     ? configPatterns.outputFile.trim()
     : undefined;
@@ -443,6 +659,7 @@ export async function generateMarkdownDoc(
   const configuredAutoExcludedPaths = (configPatterns.autoExcludedPaths || []).map(p => p.trim()).filter(Boolean);
   const effectiveDefaultIgnoredPaths = filterDefaultIgnoredPatternsForIncludes(finalIncludePatterns);
   const effectiveAutoExcludedPaths = filterAutoExcludedPathsForIncludes(finalIncludePatterns, configuredAutoExcludedPaths);
+  const effectiveDotIgnores = filterIgnoredPatternsForIncludes(finalIncludePatterns, dotIgnorePatterns);
 
   const finalExcludePatterns = [...new Set([...baseExcludePatterns, ...autoExcludePatterns])];
 
@@ -473,8 +690,14 @@ export async function generateMarkdownDoc(
     {
       includeBinary,
       discoveredBinaryExtensions,
-      defaultIgnorePatterns: effectiveDefaultIgnoredPaths,
-      additionalIgnorePatterns: effectiveAutoExcludedPaths
+      defaultIgnorePatterns: [
+        ...effectiveDefaultIgnoredPaths,
+        ...effectiveDotIgnores,
+      ],
+      additionalIgnorePatterns: effectiveAutoExcludedPaths,
+      // We already provide effective ignore patterns above (including .gitignore/.cursorignore after filtering).
+      // Avoid auto-loading ignore files again here, otherwise explicit include overrides would be broken.
+      ignoreFilePatterns: []
     }
   );
 
@@ -1213,6 +1436,7 @@ async function generateMarkdownFromDirectory(dirPath: string): Promise<string> {
 
   // Check for .prompt-fs-to-ai file and use its patterns
   const configPatterns = await parsePromptFsToAiFile(resolvedDir, process.cwd());
+  const dotIgnorePatterns = await readAllDotIgnoreFilesAsGlobPatterns(resolvedDir);
 
   // Use patterns from config file if available, otherwise use default
   let includePatterns: string[];
@@ -1244,8 +1468,13 @@ async function generateMarkdownFromDirectory(dirPath: string): Promise<string> {
     'temp-output.md',
     {
       includeBinary: configPatterns.includeBinary === true,
-      defaultIgnorePatterns: filterDefaultIgnoredPatternsForIncludes(includePatterns),
+      defaultIgnorePatterns: [
+        ...filterDefaultIgnoredPatternsForIncludes(includePatterns),
+        ...filterIgnoredPatternsForIncludes(includePatterns, dotIgnorePatterns),
+      ],
       additionalIgnorePatterns: filterAutoExcludedPathsForIncludes(includePatterns, configuredAutoExcludedPaths),
+      // Avoid auto-loading ignore files again: we already included them above after filtering.
+      ignoreFilePatterns: []
     }
   );
 

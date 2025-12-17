@@ -61,6 +61,16 @@ describe('Multiple Pattern Support', () => {
     // Tool output file (should be ignored when it's the output target)
     await fs.writeFile(path.join(testDir, 'output.md'), '# generated output\n')
 
+    // Respect .gitignore and .cursorignore
+    await fs.writeFile(path.join(testDir, '.gitignore'), 'ignored-by-gitignore.txt\nignored-dir/\n')
+    await fs.writeFile(path.join(testDir, '.cursorignore'), 'docs/readme.md\n')
+    // Respect ".<app>ignore" files as well (e.g. .dockerignore, .npmignore, etc.)
+    await fs.writeFile(path.join(testDir, '.dockerignore'), 'ignored-by-dockerignore.txt\n')
+    await fs.mkdir(path.join(testDir, 'ignored-dir'), { recursive: true })
+    await fs.writeFile(path.join(testDir, 'ignored-by-gitignore.txt'), 'ignored by gitignore')
+    await fs.writeFile(path.join(testDir, 'ignored-dir', 'secret.txt'), 'secret')
+    await fs.writeFile(path.join(testDir, 'ignored-by-dockerignore.txt'), 'ignored by dockerignore')
+
     // Create a binary-like file that should be excluded by default
     await fs.writeFile(path.join(testDir, 'image.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02, 0x03]))
     // Create a binary-like file with an unknown extension (to be auto-excluded and persisted)
@@ -171,6 +181,29 @@ describe('Multiple Pattern Support', () => {
       expect(files).not.toContain('.env')
       expect(files).not.toContain('.prompt-fs-to-ai')
       expect(files).not.toContain('output.md')
+      expect(files).not.toContain('ignored-by-gitignore.txt')
+      expect(files).not.toContain('ignored-dir/secret.txt')
+      expect(files).not.toContain('docs/readme.md')
+      expect(files).not.toContain('ignored-by-dockerignore.txt')
+    })
+
+    it('should include gitignored/cursorignored files only when explicitly included', async () => {
+      const outputFile = path.join(sandboxCwd, 'override-ignore-files.md')
+      await generateMarkdownDoc(
+        testDir,
+        ['ignored-by-gitignore.txt', 'ignored-dir/**', 'docs/readme.md', 'ignored-by-dockerignore.txt'],
+        [],
+        outputFile
+      )
+
+      const content = await fs.readFile(outputFile, 'utf-8')
+      // Assert on actual file blocks (not just command string)
+      expect(content).toContain('`ignored-by-gitignore.txt`')
+      expect(content).toContain('`ignored-dir/secret.txt`')
+      expect(content).toContain('`docs/readme.md`')
+      expect(content).toContain('`ignored-by-dockerignore.txt`')
+      expect(content).toContain('ignored by dockerignore')
+      expect(content).toContain('# Test')
     })
 
     it('should allow explicit include to override default ignored folders (node_modules)', async () => {

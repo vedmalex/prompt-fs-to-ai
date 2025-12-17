@@ -282,6 +282,8 @@ prompt-fs-to-ai <directory> [options]
 
 You can create a `.prompt-fs-to-ai` file in your project root directory to define default include and exclude patterns. This file uses a syntax similar to `.gitignore`.
 
+Note: the tool also **respects ignore files** in the target directory: `.gitignore`, `.cursorignore`, and other `.*ignore` files (for example `.dockerignore`, `.npmignore`). Lines starting with `!` (negation) are currently ignored by the tool.
+
 **Syntax:**
 
 *   Lines starting with `#` are comments and are ignored
@@ -339,8 +341,9 @@ build/
 4. If no config files are found, the default `**/*` pattern is used
 5. **Exclude patterns** from both CLI and config file are combined
 6. **Default ignores** (e.g. `.git/`, `node_modules/`, build folders, `.env*`, `.prompt-fs-to-ai`, `*.diff`, `*.current`) are applied for performance and safety
-7. **Include overrides default/auto ignores**: if your include patterns explicitly target a normally ignored folder (e.g. `node_modules/**`), the tool will not ignore it for that run
-8. **Auto-creation/Update**: The `.prompt-fs-to-ai` file in the target directory is automatically created or updated with the patterns used for the current run (including remembered output and auto-excludes)
+7. **Respects ignore files**: `.gitignore`, `.cursorignore`, and other `.*ignore` files (e.g. `.dockerignore`, `.npmignore`, `.eslintignore`) in the target directory are treated as additional ignores
+8. **Include overrides ignores**: if your include patterns explicitly target a normally ignored folder/file (default ignores, ignore files, or auto-excludes), the tool will not ignore it for that run
+9. **Auto-creation/Update**: The `.prompt-fs-to-ai` file in the target directory is automatically created or updated with the patterns used for the current run (including remembered output and auto-excludes)
 
 ## Use Cases & Examples
 
